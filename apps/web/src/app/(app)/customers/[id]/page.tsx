@@ -1,6 +1,6 @@
 'use client';
 
-import type { CustomerDto } from '@openclaw/shared';
+import type { CustomerDto, JobSummaryDto } from '@openclaw/shared';
 import { useQuery } from '@tanstack/react-query';
 import type { Route } from 'next';
 import Link from 'next/link';
@@ -9,6 +9,7 @@ import { useState } from 'react';
 import { Button } from '../../../../components/ui/button';
 import { ApiClientError } from '../../../../lib/api-client';
 import { customersApi } from '../../../../lib/customers-api';
+import { jobsApi } from '../../../../lib/jobs-api';
 
 type Tab = 'overview' | 'jobs' | 'invoices';
 
@@ -21,6 +22,12 @@ export default function CustomerDetailPage() {
     queryKey: ['customer', id],
     queryFn: () => customersApi.get(id),
     retry: false,
+  });
+
+  const customerJobsQuery = useQuery({
+    queryKey: ['customerJobs', id],
+    queryFn: () => jobsApi.listForCustomer(id),
+    enabled: tab === 'jobs',
   });
 
   if (customerQuery.isLoading) {
@@ -85,9 +92,9 @@ export default function CustomerDetailPage() {
           <Link href={`/customers/${c.id}/edit` as Route}>
             <Button variant="secondary">Edit</Button>
           </Link>
-          <Button disabled title="Available in Phase 5">
-            New job
-          </Button>
+          <Link href={`/jobs/new?customerId=${c.id}` as Route}>
+            <Button>New job</Button>
+          </Link>
           <Button disabled title="Available in Phase 10">
             New recurring job
           </Button>
@@ -199,8 +206,73 @@ export default function CustomerDetailPage() {
       )}
 
       {tab === 'jobs' && (
-        <div className="mt-6 rounded-md border border-dashed border-slate-300 px-6 py-12 text-center text-sm text-slate-500">
-          Jobs will appear here once Phase 5 lands.
+        <div className="mt-6">
+          {customerJobsQuery.isLoading && (
+            <p className="py-6 text-sm text-slate-500">Loading jobs…</p>
+          )}
+          {!customerJobsQuery.isLoading && (customerJobsQuery.data?.items ?? []).length === 0 && (
+            <div className="rounded-md border border-dashed border-slate-300 px-6 py-12 text-center text-sm text-slate-500">
+              No jobs yet for this customer.
+            </div>
+          )}
+          {(customerJobsQuery.data?.items ?? []).length > 0 && (
+            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+              <table className="min-w-full divide-y divide-slate-200">
+                <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Job #</th>
+                    <th className="px-4 py-3 font-medium">Title</th>
+                    <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium">Schedule</th>
+                    <th className="px-4 py-3 font-medium">Assignee</th>
+                    <th className="px-4 py-3 font-medium text-right">Price</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {(customerJobsQuery.data?.items ?? []).map((j: JobSummaryDto) => (
+                    <tr key={j.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 text-sm font-medium text-slate-900">
+                        <Link
+                          href={`/jobs/${j.id}` as Route}
+                          className="text-brand-700 hover:underline"
+                        >
+                          {j.jobNumber}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-700">
+                        {j.titleOrSummary ?? '—'}
+                      </td>
+                      <td className="px-4 py-3 text-sm">
+                        <span
+                          className={`inline-flex rounded px-2 py-0.5 text-xs font-medium capitalize ${
+                            j.jobStatus === 'finished'
+                              ? 'bg-slate-200 text-slate-700'
+                              : 'bg-blue-100 text-blue-800'
+                          }`}
+                        >
+                          {j.jobStatus}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-700">
+                        {j.scheduleState === 'scheduled'
+                          ? new Date(j.scheduledStartAt!).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                            })
+                          : 'Unscheduled'}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-700">
+                        {j.assigneeDisplayName ?? '—'}
+                      </td>
+                      <td className="px-4 py-3 text-right text-sm text-slate-700">
+                        ${(j.priceCents / 100).toFixed(2)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

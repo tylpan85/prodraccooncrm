@@ -57,3 +57,21 @@ export type {
   CustomerEmailDto,
   DuplicateMatchDto,
 } from './schemas/customers';
+export {
+  createJobRequestSchema,
+  updateJobRequestSchema,
+  scheduleJobRequestSchema,
+  assignJobRequestSchema,
+  jobListQuerySchema,
+  jobSummaryDtoSchema,
+  jobDtoSchema,
+} from './schemas/jobs';
+export type {
+  CreateJobRequest,
+  UpdateJobRequest,
+  ScheduleJobRequest,
+  AssignJobRequest,
+  JobListQuery,
+  JobSummaryDto,
+  JobDto,
+} from './schemas/jobs';

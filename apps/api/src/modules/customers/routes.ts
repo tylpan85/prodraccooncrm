@@ -499,16 +499,7 @@ export async function customersRoutes(fastify: FastifyInstance) {
     return reply.send({ item: customerDto(updated) });
   });
 
-  fastify.get('/api/customers/:id/jobs', async (req, reply) => {
-    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
-    const { id } = idParam.parse(req.params);
-    const exists = await prisma.customer.findFirst({
-      where: { id, organizationId: req.auth.orgId },
-      select: { id: true },
-    });
-    if (!exists) throw new ApiError(ERROR_CODES.CUSTOMER_NOT_FOUND, 404, 'Customer not found');
-    return reply.send({ items: [], nextCursor: null });
-  });
+  // /api/customers/:id/jobs moved to scheduling/jobs.ts in Phase 5
 
   fastify.get('/api/customers/:id/invoices', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
