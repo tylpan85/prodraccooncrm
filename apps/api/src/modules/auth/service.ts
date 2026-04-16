@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { prisma } from '@openclaw/db';
 import { type AuthSession, ERROR_CODES } from '@openclaw/shared';
 import argon2 from 'argon2';
-import { prisma } from '@openclaw/db';
 import { ApiError } from '../../lib/error-envelope.js';
 import {
   type AccessTokenPayload,

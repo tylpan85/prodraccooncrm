@@ -1,8 +1,4 @@
-import {
-  ERROR_CODES,
-  changePasswordRequestSchema,
-  loginRequestSchema,
-} from '@openclaw/shared';
+import { ERROR_CODES, changePasswordRequestSchema, loginRequestSchema } from '@openclaw/shared';
 import type { FastifyInstance } from 'fastify';
 import { ApiError } from '../../lib/error-envelope.js';
 import { REFRESH_COOKIE, clearAuthCookies, setAuthCookies } from './cookies.js';
@@ -50,29 +46,21 @@ export async function authRoutes(fastify: FastifyInstance) {
     return reply.send({ ok: true });
   });
 
-  fastify.get(
-    '/api/auth/me',
-    { preHandler: requireAuth },
-    async (req, reply) => {
-      if (!req.auth) {
-        throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
-      }
-      const session = await authService.getSession(req.auth);
-      return reply.send({ item: session });
-    },
-  );
+  fastify.get('/api/auth/me', { preHandler: requireAuth }, async (req, reply) => {
+    if (!req.auth) {
+      throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    }
+    const session = await authService.getSession(req.auth);
+    return reply.send({ item: session });
+  });
 
-  fastify.post(
-    '/api/auth/change-password',
-    { preHandler: requireAuth },
-    async (req, reply) => {
-      if (!req.auth) {
-        throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
-      }
-      const body = changePasswordRequestSchema.parse(req.body);
-      await authService.changePassword(req.auth.sub, body.currentPassword, body.newPassword);
-      clearAuthCookies(reply);
-      return reply.send({ ok: true });
-    },
-  );
+  fastify.post('/api/auth/change-password', { preHandler: requireAuth }, async (req, reply) => {
+    if (!req.auth) {
+      throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    }
+    const body = changePasswordRequestSchema.parse(req.body);
+    await authService.changePassword(req.auth.sub, body.currentPassword, body.newPassword);
+    clearAuthCookies(reply);
+    return reply.send({ ok: true });
+  });
 }

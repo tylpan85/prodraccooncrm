@@ -7,6 +7,7 @@ import { loadEnv } from './lib/env.js';
 import { errorHandler } from './lib/error-envelope.js';
 import { createLogger } from './lib/logger.js';
 import { authRoutes } from './modules/auth/routes.js';
+import { customersRoutes } from './modules/customers/routes.js';
 import { identityRoutes } from './modules/identity/routes.js';
 import { healthRoutes } from './routes/health.js';
 
@@ -39,6 +40,7 @@ async function main() {
   await fastify.register(healthRoutes);
   await fastify.register(authRoutes);
   await fastify.register(identityRoutes);
+  await fastify.register(customersRoutes);
 
   fastify.addHook('onClose', async () => {
     await prisma.$disconnect();

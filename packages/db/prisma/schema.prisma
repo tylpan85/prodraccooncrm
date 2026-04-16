@@ -229,16 +229,18 @@ model CustomerAddress {
 }
 
 model CustomerPhone {
-  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  customerId String     @map("customer_id") @db.Uuid
-  value      String
-  type       PhoneType?
-  note       String?
-  createdAt  DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  id          String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId  String     @map("customer_id") @db.Uuid
+  value       String
+  digitsOnly  String     @map("digits_only")
+  type        PhoneType?
+  note        String?
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
   @@index([customerId])
+  @@index([digitsOnly])
   @@map("customer_phones")
 }
 

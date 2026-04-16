@@ -12,9 +12,21 @@ interface Item {
 }
 
 const items: Item[] = [
-  { href: '/customers', label: 'Customers', match: (p) => p === '/customers' || (p.startsWith('/customers/') && !p.startsWith('/customers/jobs') && !p.startsWith('/customers/invoices')) },
+  {
+    href: '/customers',
+    label: 'Customers',
+    match: (p) =>
+      p === '/customers' ||
+      (p.startsWith('/customers/') &&
+        !p.startsWith('/customers/jobs') &&
+        !p.startsWith('/customers/invoices')),
+  },
   { href: '/customers/jobs', label: 'Jobs', match: (p) => p.startsWith('/customers/jobs') },
-  { href: '/customers/invoices', label: 'Invoices', match: (p) => p.startsWith('/customers/invoices') },
+  {
+    href: '/customers/invoices',
+    label: 'Invoices',
+    match: (p) => p.startsWith('/customers/invoices'),
+  },
 ];
 
 export function CustomersSubNav() {
