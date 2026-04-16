@@ -1,6 +1,7 @@
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
+import { prisma } from '@openclaw/db';
 import Fastify from 'fastify';
 import { loadEnv } from './lib/env.js';
 import { errorHandler } from './lib/error-envelope.js';
@@ -34,6 +35,18 @@ async function main() {
   fastify.setErrorHandler(errorHandler);
 
   await fastify.register(healthRoutes);
+
+  fastify.addHook('onClose', async () => {
+    await prisma.$disconnect();
+  });
+
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, async () => {
+      logger.info({ signal }, 'shutting down');
+      await fastify.close();
+      process.exit(0);
+    });
+  }
 
   try {
     await fastify.listen({ port: env.API_PORT, host: env.API_HOST });

@@ -1,12 +1,459 @@
-// Phase 1 fills this schema per docs/architecture-v2/data-model.md.
-// For Phase 0, we keep a minimal valid generator + datasource so
-// `pnpm --filter @openclaw/db generate` works as a smoke test.
+// Raccoon CRM v2 — production schema
+// Source of truth: /home/developer/.openclaw/workspace/docs/architecture-v2/data-model.md
+// Every tenant-owned table carries organization_id for SaaS-readiness.
+// Money: cents (Int). Timestamps: timestamptz (UTC).
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgcrypto, citext]
+}
+
+// =========================================================================
+// Enums (translate to native PG enums)
+// =========================================================================
+
+enum CustomerType {
+  Homeowner
+  Business
+}
+
+enum PhoneType {
+  mobile
+  home
+  work
+  other
+}
+
+enum ScheduleState {
+  unscheduled
+  scheduled
+}
+
+enum JobStatus {
+  open
+  finished
+}
+
+enum InvoiceStatus {
+  draft
+  sent
+  paid
+  past_due
+  void
+}
+
+enum RecurrenceFrequency {
+  daily
+  weekly
+  monthly
+  yearly
+}
+
+enum RecurrenceEndMode {
+  never
+  after_n_occurrences
+  on_date
+}
+
+enum RecurrenceOrdinal {
+  first
+  second
+  third
+  fourth
+  fifth
+  last
+}
+
+enum DayOfWeek {
+  SUN
+  MON
+  TUE
+  WED
+  THU
+  FRI
+  SAT
+}
+
+enum MonthOfYear {
+  JAN
+  FEB
+  MAR
+  APR
+  MAY
+  JUN
+  JUL
+  AUG
+  SEP
+  OCT
+  NOV
+  DEC
+}
+
+// =========================================================================
+// Identity
+// =========================================================================
+
+model Organization {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name      String
+  timezone  String   @default("UTC")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  users           User[]
+  teamMembers     TeamMember[]
+  customers       Customer[]
+  services        Service[]
+  jobs            Job[]
+  events          Event[]
+  recurringSeries RecurringSeries[]
+  invoices        Invoice[]
+  auditLogs       AuditLog[]
+  counters        OrganizationCounter[]
+
+  @@map("organizations")
+}
+
+model User {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String   @map("organization_id") @db.Uuid
+  email             String   @unique @db.Citext
+  passwordHash      String   @map("password_hash")
+  role              String
+  mustResetPassword Boolean  @default(false) @map("must_reset_password")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization  Organization   @relation(fields: [organizationId], references: [id])
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  userAgent String?   @map("user_agent")
+  ip        String?   @db.Inet
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(6)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model TeamMember {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String   @map("organization_id") @db.Uuid
+  displayName      String   @map("display_name")
+  initials         String?
+  color            String
+  activeOnSchedule Boolean  @default(true) @map("active_on_schedule")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  assignedJobs   Job[]
+  assignedEvents Event[]
+
+  @@index([organizationId, activeOnSchedule])
+  @@index([organizationId, displayName])
+  @@map("team_members")
+}
+
+// =========================================================================
+// Customers
+// =========================================================================
+
+model Customer {
+  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String       @map("organization_id") @db.Uuid
+  firstName         String?      @map("first_name")
+  lastName          String?      @map("last_name")
+  companyName       String?      @map("company_name")
+  displayName       String       @map("display_name")
+  role              String?
+  customerType      CustomerType @map("customer_type")
+  subcontractor     Boolean      @default(false)
+  doNotService      Boolean      @default(false) @map("do_not_service")
+  sendNotifications Boolean      @default(true) @map("send_notifications")
+  customerNotes     String?      @map("customer_notes")
+  leadSource        String?      @map("lead_source")
+  referredBy        String?      @map("referred_by")
+  billingAddress    String?      @map("billing_address")
+  createdAt         DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime     @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization      @relation(fields: [organizationId], references: [id])
+  addresses    CustomerAddress[]
+  phones       CustomerPhone[]
+  emails       CustomerEmail[]
+  tags         CustomerTag[]
+  jobs         Job[]
+  invoices     Invoice[]
+
+  @@index([organizationId, displayName])
+  @@index([organizationId, doNotService])
+  @@map("customers")
+}
+
+model CustomerAddress {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId String   @map("customer_id") @db.Uuid
+  street     String?
+  unit       String?
+  city       String?
+  state      String?
+  zip        String?
+  notes      String?
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  jobs     Job[]
+
+  @@index([customerId])
+  @@map("customer_addresses")
+}
+
+model CustomerPhone {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId String     @map("customer_id") @db.Uuid
+  value      String
+  type       PhoneType?
+  note       String?
+  createdAt  DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+  @@map("customer_phones")
+}
+
+model CustomerEmail {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId String   @map("customer_id") @db.Uuid
+  value      String   @db.Citext
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([customerId])
+  @@map("customer_emails")
+}
+
+model CustomerTag {
+  customerId String @map("customer_id") @db.Uuid
+  tag        String
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@id([customerId, tag])
+  @@map("customer_tags")
+}
+
+// =========================================================================
+// Catalog
+// =========================================================================
+
+model Service {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  jobs         Job[]
+
+  @@index([organizationId, active])
+  @@map("services")
+}
+
+// =========================================================================
+// Scheduling
+// =========================================================================
+
+model Job {
+  id                       String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId           String        @map("organization_id") @db.Uuid
+  jobNumber                String        @map("job_number")
+  customerId               String        @map("customer_id") @db.Uuid
+  customerAddressId        String        @map("customer_address_id") @db.Uuid
+  serviceId                String?       @map("service_id") @db.Uuid
+  titleOrSummary           String?       @map("title_or_summary")
+  priceCents               Int           @default(0) @map("price_cents")
+  leadSource               String?       @map("lead_source")
+  privateNotes             String?       @map("private_notes")
+  scheduleState            ScheduleState @map("schedule_state")
+  scheduledStartAt         DateTime?     @map("scheduled_start_at") @db.Timestamptz(6)
+  scheduledEndAt           DateTime?     @map("scheduled_end_at") @db.Timestamptz(6)
+  assigneeTeamMemberId     String?       @map("assignee_team_member_id") @db.Uuid
+  jobStatus                JobStatus     @default(open) @map("job_status")
+  finishedAt               DateTime?     @map("finished_at") @db.Timestamptz(6)
+  recurringSeriesId        String?       @map("recurring_series_id") @db.Uuid
+  occurrenceIndex          Int?          @map("occurrence_index")
+  isExceptionInstance      Boolean       @default(false) @map("is_exception_instance")
+  deletedFromSeriesAt      DateTime?     @map("deleted_from_series_at") @db.Timestamptz(6)
+  generatedFromRuleVersion Int?          @map("generated_from_rule_version")
+  createdAt                DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization    Organization     @relation(fields: [organizationId], references: [id])
+  customer        Customer         @relation(fields: [customerId], references: [id])
+  customerAddress CustomerAddress  @relation(fields: [customerAddressId], references: [id])
+  service         Service?         @relation(fields: [serviceId], references: [id])
+  assignee        TeamMember?      @relation(fields: [assigneeTeamMemberId], references: [id])
+  recurringSeries RecurringSeries? @relation("SeriesJobs", fields: [recurringSeriesId], references: [id])
+  sourceOfSeries  RecurringSeries? @relation("SourceJob")
+  tags            JobTag[]
+  invoice         Invoice?
+
+  @@unique([organizationId, jobNumber])
+  @@index([organizationId, scheduleState, scheduledStartAt])
+  @@index([organizationId, customerId])
+  @@index([organizationId, assigneeTeamMemberId, scheduledStartAt])
+  @@index([recurringSeriesId, occurrenceIndex])
+  @@map("jobs")
+}
+
+model JobTag {
+  jobId String @map("job_id") @db.Uuid
+  tag   String
+
+  job Job @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@id([jobId, tag])
+  @@map("job_tags")
+}
+
+model Event {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId       String   @map("organization_id") @db.Uuid
+  scheduledStartAt     DateTime @map("scheduled_start_at") @db.Timestamptz(6)
+  scheduledEndAt       DateTime @map("scheduled_end_at") @db.Timestamptz(6)
+  assigneeTeamMemberId String?  @map("assignee_team_member_id") @db.Uuid
+  name                 String?
+  note                 String?
+  location             String?
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  assignee     TeamMember?  @relation(fields: [assigneeTeamMemberId], references: [id])
+
+  @@index([organizationId, scheduledStartAt])
+  @@map("events")
+}
+
+model RecurringSeries {
+  id                          String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId              String              @map("organization_id") @db.Uuid
+  sourceJobId                 String              @unique @map("source_job_id") @db.Uuid
+  recurrenceFrequency         RecurrenceFrequency @map("recurrence_frequency")
+  recurrenceInterval          Int                 @default(1) @map("recurrence_interval")
+  recurrenceEndMode           RecurrenceEndMode   @map("recurrence_end_mode")
+  recurrenceOccurrenceCount   Int?                @map("recurrence_occurrence_count")
+  recurrenceEndDate           DateTime?           @map("recurrence_end_date") @db.Date
+  recurrenceDayOfWeek         DayOfWeek[]         @map("recurrence_day_of_week")
+  recurrenceDayOfMonth        Int?                @map("recurrence_day_of_month")
+  recurrenceOrdinal           RecurrenceOrdinal?  @map("recurrence_ordinal")
+  recurrenceMonthOfYear       MonthOfYear?        @map("recurrence_month_of_year")
+  recurrenceEnabled           Boolean             @default(true) @map("recurrence_enabled")
+  recurrenceRuleVersion       Int                 @default(1) @map("recurrence_rule_version")
+  materializationHorizonUntil DateTime?           @map("materialization_horizon_until") @db.Timestamptz(6)
+  lastExtendedAt              DateTime?           @map("last_extended_at") @db.Timestamptz(6)
+  createdAt                   DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                   DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  sourceJob    Job          @relation("SourceJob", fields: [sourceJobId], references: [id])
+  jobs         Job[]        @relation("SeriesJobs")
+
+  @@index([organizationId])
+  @@map("recurring_series")
+}
+
+// =========================================================================
+// Billing
+// =========================================================================
+
+model Invoice {
+  id                        String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId            String        @map("organization_id") @db.Uuid
+  invoiceNumber             String        @map("invoice_number")
+  jobId                     String        @unique @map("job_id") @db.Uuid
+  customerId                String        @map("customer_id") @db.Uuid
+  status                    InvoiceStatus @default(draft)
+  subtotalCents             Int           @map("subtotal_cents")
+  totalCents                Int           @map("total_cents")
+  amountDueCents            Int           @map("amount_due_cents")
+  paidCents                 Int           @default(0) @map("paid_cents")
+  serviceNameSnapshot       String?       @map("service_name_snapshot")
+  servicePriceCentsSnapshot Int?          @map("service_price_cents_snapshot")
+  dueDate                   DateTime?     @map("due_date") @db.Date
+  createdAt                 DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  sentAt                    DateTime?     @map("sent_at") @db.Timestamptz(6)
+  paidAt                    DateTime?     @map("paid_at") @db.Timestamptz(6)
+  voidedAt                  DateTime?     @map("voided_at") @db.Timestamptz(6)
+  updatedAt                 DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  job          Job          @relation(fields: [jobId], references: [id])
+  customer     Customer     @relation(fields: [customerId], references: [id])
+
+  @@unique([organizationId, invoiceNumber])
+  @@index([organizationId, status, dueDate])
+  @@index([organizationId, customerId])
+  @@map("invoices")
+}
+
+// =========================================================================
+// Per-org counters (job_number, invoice_number)
+// Prisma can't own per-tenant PG sequences, so we hold them as rows.
+// =========================================================================
+
+model OrganizationCounter {
+  organizationId String @map("organization_id") @db.Uuid
+  name           String
+  nextValue      Int    @default(1001) @map("next_value")
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@id([organizationId, name])
+  @@map("organization_counters")
+}
+
+// =========================================================================
+// Audit
+// =========================================================================
+
+model AuditLog {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  actorUserId    String?  @map("actor_user_id") @db.Uuid
+  entityType     String   @map("entity_type")
+  entityId       String   @map("entity_id") @db.Uuid
+  action         String
+  payloadJson    Json     @map("payload_json")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  actor        User?        @relation(fields: [actorUserId], references: [id])
+
+  @@index([organizationId, entityType, entityId, createdAt])
+  @@map("audit_log")
 }

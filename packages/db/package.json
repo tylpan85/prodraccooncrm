@@ -12,17 +12,19 @@
     "typecheck": "tsc --noEmit",
     "build": "echo 'db: source-only workspace package'",
     "test": "echo 'db tests run via apps/api integration suite'",
-    "generate": "prisma generate",
-    "migrate": "prisma migrate dev",
-    "migrate:deploy": "prisma migrate deploy",
-    "reset": "prisma migrate reset --force --skip-seed && pnpm seed",
-    "seed": "tsx src/seed.ts",
-    "studio": "prisma studio"
+    "generate": "dotenv -e ../../.env -- prisma generate",
+    "migrate": "dotenv -e ../../.env -- prisma migrate dev",
+    "migrate:deploy": "dotenv -e ../../.env -- prisma migrate deploy",
+    "reset": "dotenv -e ../../.env -- prisma migrate reset --force --skip-seed && pnpm seed",
+    "seed": "dotenv -e ../../.env -- tsx src/seed.ts",
+    "studio": "dotenv -e ../../.env -- prisma studio"
   },
   "dependencies": {
-    "@prisma/client": "^6.0.1"
+    "@prisma/client": "^6.0.1",
+    "argon2": "^0.41.1"
   },
   "devDependencies": {
+    "dotenv-cli": "^7.4.4",
     "prisma": "^6.0.1",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
