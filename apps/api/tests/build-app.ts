@@ -5,6 +5,7 @@ import { errorHandler } from '../src/lib/error-envelope.js';
 import { authRoutes } from '../src/modules/auth/routes.js';
 import { customersRoutes } from '../src/modules/customers/routes.js';
 import { identityRoutes } from '../src/modules/identity/routes.js';
+import { eventsRoutes } from '../src/modules/scheduling/events.js';
 import { jobsRoutes } from '../src/modules/scheduling/jobs.js';
 import { scheduleRoutes } from '../src/modules/scheduling/schedule.js';
 import { healthRoutes } from '../src/routes/health.js';
@@ -19,6 +20,7 @@ export async function buildTestApp(): Promise<FastifyInstance> {
   await app.register(identityRoutes);
   await app.register(customersRoutes);
   await app.register(jobsRoutes);
+  await app.register(eventsRoutes);
   await app.register(scheduleRoutes);
   await app.ready();
   return app;

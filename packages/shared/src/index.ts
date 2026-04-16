@@ -75,3 +75,13 @@ export type {
   JobSummaryDto,
   JobDto,
 } from './schemas/jobs';
+export {
+  createEventRequestSchema,
+  updateEventRequestSchema,
+  eventDtoSchema,
+} from './schemas/events';
+export type {
+  CreateEventRequest,
+  UpdateEventRequest,
+  EventDto,
+} from './schemas/events';

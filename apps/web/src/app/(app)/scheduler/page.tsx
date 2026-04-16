@@ -1,6 +1,6 @@
 'use client';
 
-import type { JobDto, TeamMemberDto } from '@openclaw/shared';
+import type { EventDto, JobDto, TeamMemberDto } from '@openclaw/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Route } from 'next';
 import Link from 'next/link';
@@ -8,8 +8,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../../../components/ui/button';
 import { cn } from '../../../lib/cn';
+import { eventsApi } from '../../../lib/events-api';
 import { jobsApi } from '../../../lib/jobs-api';
-
 import type { DayResponse, RangeResponse } from '../../../lib/scheduler-api';
 import { schedulerApi } from '../../../lib/scheduler-api';
 import { settingsApi } from '../../../lib/settings-api';
@@ -1133,10 +1133,38 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
 // ---------------------------------------------------------------------------
 
 function EventSlideOver({ eventId, onClose }: { eventId: string; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const eventQuery = useQuery({
+    queryKey: ['event', eventId],
+    queryFn: () => eventsApi.get(eventId),
+    retry: false,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: () => eventsApi.delete(eventId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+      queryClient.invalidateQueries({ queryKey: ['schedule'] });
+      onClose();
+    },
+  });
+
+  if (eventQuery.isLoading) {
+    return <div className="p-6 text-sm text-slate-500">Loading…</div>;
+  }
+  if (eventQuery.error) {
+    return <div className="p-6 text-sm text-red-600">Failed to load event.</div>;
+  }
+
+  const event = eventQuery.data as EventDto;
+
   return (
     <div className="p-6">
       <div className="mb-4 flex items-start justify-between">
-        <h2 className="text-lg font-semibold text-slate-900">Event</h2>
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">{event.name ?? '(no name)'}</h2>
+          <p className="text-sm text-slate-500">Event</p>
+        </div>
         <button
           type="button"
           className="rounded p-1 text-slate-400 hover:text-slate-600"
@@ -1145,9 +1173,42 @@ function EventSlideOver({ eventId, onClose }: { eventId: string; onClose: () => 
           <XIcon />
         </button>
       </div>
-      <p className="text-sm text-slate-500">
-        Event details will be available after Phase 7. Event ID: {eventId}
-      </p>
+
+      <dl className="space-y-2 text-sm">
+        <DetailRow label="Start" value={formatTime(event.scheduledStartAt)} />
+        <DetailRow label="End" value={formatTime(event.scheduledEndAt)} />
+        <DetailRow label="Assignee" value={event.assigneeDisplayName ?? 'Unassigned'} />
+        <DetailRow label="Location" value={event.location ?? '—'} />
+      </dl>
+
+      {event.note && (
+        <p className="mt-4 whitespace-pre-wrap text-sm text-slate-600">{event.note}</p>
+      )}
+
+      <div className="mt-6 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
+        <Link href={`/events/${event.id}/edit` as Route}>
+          <Button variant="secondary" size="sm">
+            Edit
+          </Button>
+        </Link>
+        <Link href={`/events/${event.id}` as Route}>
+          <Button variant="secondary" size="sm">
+            Full detail
+          </Button>
+        </Link>
+        <Button
+          variant="danger"
+          size="sm"
+          onClick={() => {
+            if (window.confirm('Delete this event?')) {
+              deleteMutation.mutate();
+            }
+          }}
+          disabled={deleteMutation.isPending}
+        >
+          {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+        </Button>
+      </div>
     </div>
   );
 }
