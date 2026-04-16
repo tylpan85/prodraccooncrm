@@ -1,10 +1,12 @@
 'use client';
 
 import type { AuthSession } from '@openclaw/shared';
+import { useQuery } from '@tanstack/react-query';
 import type { Route } from 'next';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { cn } from '../../lib/cn';
+import { settingsApi } from '../../lib/settings-api';
 import { CogMenu } from './cog-menu';
 import { NewMenu } from './new-menu';
 import { UserMenu } from './user-menu';
@@ -28,14 +30,18 @@ const primaryNav: { href: Route; label: string; match: (p: string) => boolean }[
 
 export function Topbar({ session }: Props) {
   const pathname = usePathname() ?? '';
+  const { data: organization } = useQuery({
+    queryKey: ['organizations', 'current'],
+    queryFn: () => settingsApi.getCurrentOrganization(),
+    initialData: session.organization,
+  });
+
   return (
     <header className="border-b border-slate-200 bg-white">
       <div className="flex h-14 items-center gap-6 px-6">
         <Link href="/scheduler" className="flex items-center gap-2">
           <span className="text-base font-semibold text-brand-700">Raccoon CRM</span>
-          <span className="hidden text-sm text-slate-500 sm:inline">
-            · {session.organization.name}
-          </span>
+          <span className="hidden text-sm text-slate-500 sm:inline">· {organization.name}</span>
         </Link>
 
         <nav className="flex flex-1 items-center gap-1">

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { organizationDtoSchema } from './identity';
 
 export const loginRequestSchema = z.object({
   email: z.string().email(),
@@ -19,13 +20,6 @@ export const userDtoSchema = z.object({
   mustResetPassword: z.boolean(),
 });
 export type UserDto = z.infer<typeof userDtoSchema>;
-
-export const organizationDtoSchema = z.object({
-  id: z.string().uuid(),
-  name: z.string(),
-  timezone: z.string(),
-});
-export type OrganizationDto = z.infer<typeof organizationDtoSchema>;
 
 export const authSessionSchema = z.object({
   user: userDtoSchema,
