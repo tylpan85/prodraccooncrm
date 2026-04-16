@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: openclaw
+          POSTGRES_PASSWORD: openclaw
+          POSTGRES_DB: openclaw
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U openclaw -d openclaw"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgresql://openclaw:openclaw@localhost:5432/openclaw?schema=public
+      JWT_ACCESS_SECRET: ci-access-secret-that-is-long-enough-32chars
+      JWT_REFRESH_SECRET: ci-refresh-secret-that-is-long-enough-32chars
+      COOKIE_SECRET: ci-cookie-secret-that-is-long-enough-32chars
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test

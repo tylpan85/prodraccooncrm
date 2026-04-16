@@ -1,0 +1,12 @@
+// Phase 1 fills this schema per docs/architecture-v2/data-model.md.
+// For Phase 0, we keep a minimal valid generator + datasource so
+// `pnpm --filter @openclaw/db generate` works as a smoke test.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
