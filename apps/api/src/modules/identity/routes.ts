@@ -10,6 +10,7 @@ import {
 } from '@openclaw/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { auditLog } from '../../lib/audit.js';
 import { ApiError } from '../../lib/error-envelope.js';
 import { requireAuth } from '../auth/guard.js';
 
@@ -83,6 +84,13 @@ export async function identityRoutes(fastify: FastifyInstance) {
       where: { id: req.auth.orgId },
       data: body,
     });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'organization',
+      entityId: org.id,
+      action: 'update',
+    });
     return reply.send({
       item: { id: org.id, name: org.name, timezone: org.timezone },
     });
@@ -147,6 +155,13 @@ export async function identityRoutes(fastify: FastifyInstance) {
           },
         },
       });
+      await auditLog(prisma, {
+        organizationId: req.auth.orgId,
+        actorUserId: req.auth.sub,
+        entityType: 'service',
+        entityId: service.id,
+        action: 'create',
+      });
       return reply.code(201).send({ item: serviceDto(service) });
     } catch (err) {
       if (isUniqueConstraintError(err)) {
@@ -168,6 +183,13 @@ export async function identityRoutes(fastify: FastifyInstance) {
         color: body.color,
         activeOnSchedule: body.activeOnSchedule ?? true,
       },
+    });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'team_member',
+      entityId: m.id,
+      action: 'create',
     });
     return reply.code(201).send({
       item: {
@@ -205,6 +227,13 @@ export async function identityRoutes(fastify: FastifyInstance) {
           },
         },
       });
+      await auditLog(prisma, {
+        organizationId: req.auth.orgId,
+        actorUserId: req.auth.sub,
+        entityType: 'service',
+        entityId: id,
+        action: 'update',
+      });
       return reply.send({ item: serviceDto(service) });
     } catch (err) {
       if (isUniqueConstraintError(err)) {
@@ -231,6 +260,13 @@ export async function identityRoutes(fastify: FastifyInstance) {
             ? normalizeNullableInitials(body.initials, body.displayName ?? existing.displayName)
             : undefined,
       },
+    });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'team_member',
+      entityId: id,
+      action: 'update',
     });
     return reply.send({
       item: {
@@ -262,6 +298,13 @@ export async function identityRoutes(fastify: FastifyInstance) {
       );
     }
     await prisma.service.delete({ where: { id } });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'service',
+      entityId: id,
+      action: 'delete',
+    });
     return reply.send({ item: { id } });
   });
 
@@ -292,6 +335,13 @@ export async function identityRoutes(fastify: FastifyInstance) {
     }
 
     await prisma.teamMember.delete({ where: { id } });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'team_member',
+      entityId: id,
+      action: 'delete',
+    });
     return reply.send({ item: { id } });
   });
 

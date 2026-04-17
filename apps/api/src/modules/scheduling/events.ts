@@ -1,6 +1,7 @@
 import { prisma } from '@openclaw/db';
 import { ERROR_CODES, createEventRequestSchema, updateEventRequestSchema } from '@openclaw/shared';
 import type { FastifyInstance } from 'fastify';
+import { auditLog } from '../../lib/audit.js';
 import { ApiError } from '../../lib/error-envelope.js';
 import { requireAuth } from '../auth/guard.js';
 
@@ -72,6 +73,14 @@ export async function eventsRoutes(fastify: FastifyInstance) {
         assigneeTeamMemberId: body.assigneeTeamMemberId ?? null,
       },
       include: { assignee: { select: { displayName: true } } },
+    });
+
+    await auditLog(prisma, {
+      organizationId: orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'event',
+      entityId: event.id,
+      action: 'create',
     });
 
     return reply.status(201).send({ item: eventDto(event) });
@@ -156,6 +165,14 @@ export async function eventsRoutes(fastify: FastifyInstance) {
       include: { assignee: { select: { displayName: true } } },
     });
 
+    await auditLog(prisma, {
+      organizationId: orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'event',
+      entityId: id,
+      action: 'update',
+    });
+
     return reply.send({ item: eventDto(event) });
   });
 
@@ -171,6 +188,13 @@ export async function eventsRoutes(fastify: FastifyInstance) {
     if (!existing) throw new ApiError(ERROR_CODES.EVENT_NOT_FOUND, 404, 'Event not found');
 
     await prisma.event.delete({ where: { id } });
+    await auditLog(prisma, {
+      organizationId: orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'event',
+      entityId: id,
+      action: 'delete',
+    });
     return reply.send({ item: { id } });
   });
 }

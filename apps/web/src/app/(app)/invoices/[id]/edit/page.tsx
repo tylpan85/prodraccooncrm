@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import { Button } from '../../../../../components/ui/button';
 import { Input } from '../../../../../components/ui/input';
 import { Label } from '../../../../../components/ui/label';
+import { Skeleton } from '../../../../../components/ui/skeleton';
 import { ApiClientError } from '../../../../../lib/api-client';
 import { invoicesApi } from '../../../../../lib/invoices-api';
 
@@ -63,7 +64,16 @@ export default function EditInvoicePage() {
   });
 
   if (invoiceQuery.isLoading) {
-    return <div className="px-6 py-8 text-sm text-slate-500">Loading invoice...</div>;
+    return (
+      <div className="mx-auto max-w-2xl px-6 py-8">
+        <Skeleton className="mb-6 h-7 w-40" />
+        <div className="space-y-6">
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+          <Skeleton className="h-10 w-full" />
+        </div>
+      </div>
+    );
   }
   if (invoiceQuery.error) {
     return <div className="px-6 py-8 text-sm text-slate-700">Could not load invoice.</div>;

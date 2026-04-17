@@ -13,6 +13,7 @@ import {
 } from '@openclaw/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { auditLog } from '../../lib/audit.js';
 import { ApiError } from '../../lib/error-envelope.js';
 import { requireAuth } from '../auth/guard.js';
 
@@ -222,6 +223,7 @@ export async function recurringRoutes(fastify: FastifyInstance) {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
     const { id } = idParam.parse(req.params);
     const orgId = req.auth.orgId;
+    const actorUserId = req.auth.sub;
     const body = attachRecurrenceRequestSchema.parse(req.body);
 
     const job = await prisma.job.findFirst({
@@ -289,6 +291,15 @@ export async function recurringRoutes(fastify: FastifyInstance) {
 
       const generatedCount = await materializeTail(tx, orgId, series, pivot, 2, 1);
 
+      await auditLog(tx, {
+        organizationId: orgId,
+        actorUserId,
+        entityType: 'recurring_series',
+        entityId: series.id,
+        action: 'attach_recurrence',
+        payload: { jobId: id },
+      });
+
       return { seriesId: series.id, generatedCount };
     });
 
@@ -301,6 +312,7 @@ export async function recurringRoutes(fastify: FastifyInstance) {
   fastify.post('/api/recurring-jobs', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
     const orgId = req.auth.orgId;
+    const actorUserId = req.auth.sub;
     const body = createRecurringJobRequestSchema.parse(req.body);
 
     // Validate customer
@@ -390,6 +402,14 @@ export async function recurringRoutes(fastify: FastifyInstance) {
       };
 
       const generatedCount = await materializeTail(tx, orgId, series, pivot, 2, 1);
+
+      await auditLog(tx, {
+        organizationId: orgId,
+        actorUserId,
+        entityType: 'recurring_series',
+        entityId: series.id,
+        action: 'create',
+      });
 
       return { sourceJobId: sourceJob.id, seriesId: series.id, generatedCount };
     });

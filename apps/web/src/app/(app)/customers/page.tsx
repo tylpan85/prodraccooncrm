@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { useState } from 'react';
 import { Button } from '../../../components/ui/button';
 import { Input } from '../../../components/ui/input';
+import { TableSkeleton } from '../../../components/ui/skeleton';
 import { customersApi } from '../../../lib/customers-api';
 
 export default function CustomersPage() {
@@ -66,61 +67,60 @@ export default function CustomersPage() {
         )}
       </form>
 
-      <div className="mt-6 overflow-hidden rounded-lg border border-slate-200 bg-white">
-        <table className="min-w-full divide-y divide-slate-200">
-          <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-            <tr>
-              <th className="px-4 py-3 font-medium">Name</th>
-              <th className="px-4 py-3 font-medium">Type</th>
-              <th className="px-4 py-3 font-medium">Phone</th>
-              <th className="px-4 py-3 font-medium">Email</th>
-              <th className="px-4 py-3 font-medium">City</th>
-              <th className="px-4 py-3 font-medium text-right">Jobs</th>
-              <th className="px-4 py-3 font-medium text-right">Open inv</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200">
-            {customersQuery.isLoading && (
+      {customersQuery.isLoading ? (
+        <div className="mt-6">
+          <TableSkeleton rows={5} cols={7} />
+        </div>
+      ) : (
+        <div className="mt-6 overflow-hidden rounded-lg border border-slate-200 bg-white">
+          <table className="min-w-full divide-y divide-slate-200">
+            <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
               <tr>
-                <td colSpan={7} className="px-4 py-6 text-sm text-slate-500">
-                  Loading customers…
-                </td>
+                <th className="px-4 py-3 font-medium">Name</th>
+                <th className="px-4 py-3 font-medium">Type</th>
+                <th className="px-4 py-3 font-medium">Phone</th>
+                <th className="px-4 py-3 font-medium">Email</th>
+                <th className="px-4 py-3 font-medium">City</th>
+                <th className="px-4 py-3 font-medium text-right">Jobs</th>
+                <th className="px-4 py-3 font-medium text-right">Open inv</th>
               </tr>
-            )}
-            {!customersQuery.isLoading && items.length === 0 && (
-              <tr>
-                <td colSpan={7} className="px-4 py-6 text-sm text-slate-500">
-                  {appliedQuery
-                    ? 'No customers match that search.'
-                    : 'No customers yet — create your first one.'}
-                </td>
-              </tr>
-            )}
-            {items.map((c) => (
-              <tr key={c.id} className="hover:bg-slate-50">
-                <td className="px-4 py-3 text-sm font-medium text-slate-900">
-                  <Link href={`/customers/${c.id}` as Route} className="hover:underline">
-                    {c.displayName}
-                  </Link>
-                  {c.doNotService && (
-                    <span className="ml-2 inline-block rounded bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700">
-                      DNS
-                    </span>
-                  )}
-                </td>
-                <td className="px-4 py-3 text-sm text-slate-700">{c.customerType}</td>
-                <td className="px-4 py-3 text-sm text-slate-700">{c.primaryPhone ?? '—'}</td>
-                <td className="px-4 py-3 text-sm text-slate-700">{c.primaryEmail ?? '—'}</td>
-                <td className="px-4 py-3 text-sm text-slate-700">{c.city ?? '—'}</td>
-                <td className="px-4 py-3 text-right text-sm text-slate-700">{c.jobsCount}</td>
-                <td className="px-4 py-3 text-right text-sm text-slate-700">
-                  {c.openInvoicesCount}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-slate-200">
+              {items.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-4 py-6 text-sm text-slate-500">
+                    {appliedQuery
+                      ? 'No customers match that search.'
+                      : 'No customers yet — create your first one.'}
+                  </td>
+                </tr>
+              )}
+              {items.map((c) => (
+                <tr key={c.id} className="hover:bg-slate-50">
+                  <td className="px-4 py-3 text-sm font-medium text-slate-900">
+                    <Link href={`/customers/${c.id}` as Route} className="hover:underline">
+                      {c.displayName}
+                    </Link>
+                    {c.doNotService && (
+                      <span className="ml-2 inline-block rounded bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-700">
+                        DNS
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-slate-700">{c.customerType}</td>
+                  <td className="px-4 py-3 text-sm text-slate-700">{c.primaryPhone ?? '—'}</td>
+                  <td className="px-4 py-3 text-sm text-slate-700">{c.primaryEmail ?? '—'}</td>
+                  <td className="px-4 py-3 text-sm text-slate-700">{c.city ?? '—'}</td>
+                  <td className="px-4 py-3 text-right text-sm text-slate-700">{c.jobsCount}</td>
+                  <td className="px-4 py-3 text-right text-sm text-slate-700">
+                    {c.openInvoicesCount}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="mt-4 flex items-center justify-between">
         <p className="text-xs text-slate-500">

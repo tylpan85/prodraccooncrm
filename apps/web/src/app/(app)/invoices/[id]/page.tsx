@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Button } from '../../../../components/ui/button';
+import { DetailSkeleton } from '../../../../components/ui/skeleton';
 import { ApiClientError } from '../../../../lib/api-client';
 import { invoicesApi } from '../../../../lib/invoices-api';
 
@@ -74,7 +75,11 @@ export default function InvoiceDetailPage() {
   });
 
   if (invoiceQuery.isLoading) {
-    return <div className="px-6 py-8 text-sm text-slate-500">Loading invoice...</div>;
+    return (
+      <div className="mx-auto max-w-3xl px-6 py-8">
+        <DetailSkeleton />
+      </div>
+    );
   }
   if (invoiceQuery.error || !invoiceQuery.data) {
     return <div className="px-6 py-8 text-sm text-slate-700">Could not load invoice.</div>;

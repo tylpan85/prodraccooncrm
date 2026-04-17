@@ -1,14 +1,16 @@
 'use client';
 
-import type { CustomerDto, JobSummaryDto } from '@openclaw/shared';
+import type { CustomerDto, InvoiceSummaryDto, JobSummaryDto } from '@openclaw/shared';
 import { useQuery } from '@tanstack/react-query';
 import type { Route } from 'next';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { useState } from 'react';
 import { Button } from '../../../../components/ui/button';
+import { DetailSkeleton } from '../../../../components/ui/skeleton';
 import { ApiClientError } from '../../../../lib/api-client';
 import { customersApi } from '../../../../lib/customers-api';
+import { invoicesApi } from '../../../../lib/invoices-api';
 import { jobsApi } from '../../../../lib/jobs-api';
 
 type Tab = 'overview' | 'jobs' | 'invoices';
@@ -30,8 +32,18 @@ export default function CustomerDetailPage() {
     enabled: tab === 'jobs',
   });
 
+  const customerInvoicesQuery = useQuery({
+    queryKey: ['customerInvoices', id],
+    queryFn: () => invoicesApi.list({ customerId: id }),
+    enabled: tab === 'invoices',
+  });
+
   if (customerQuery.isLoading) {
-    return <div className="px-6 py-8 text-sm text-slate-500">Loading customer…</div>;
+    return (
+      <div className="px-6 py-8">
+        <DetailSkeleton />
+      </div>
+    );
   }
   if (customerQuery.error) {
     const err = customerQuery.error;
@@ -277,8 +289,57 @@ export default function CustomerDetailPage() {
       )}
 
       {tab === 'invoices' && (
-        <div className="mt-6 rounded-md border border-dashed border-slate-300 px-6 py-12 text-center text-sm text-slate-500">
-          Invoices will appear here once Phase 11 lands.
+        <div className="mt-6">
+          {customerInvoicesQuery.isLoading && (
+            <p className="py-6 text-sm text-slate-500">Loading invoices…</p>
+          )}
+          {!customerInvoicesQuery.isLoading &&
+            (customerInvoicesQuery.data?.items ?? []).length === 0 && (
+              <div className="rounded-md border border-dashed border-slate-300 px-6 py-12 text-center text-sm text-slate-500">
+                No invoices yet for this customer.
+              </div>
+            )}
+          {(customerInvoicesQuery.data?.items ?? []).length > 0 && (
+            <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+              <table className="min-w-full divide-y divide-slate-200">
+                <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Number</th>
+                    <th className="px-4 py-3 font-medium">Service</th>
+                    <th className="px-4 py-3 font-medium text-right">Amount</th>
+                    <th className="px-4 py-3 font-medium">Due Date</th>
+                    <th className="px-4 py-3 font-medium">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {(customerInvoicesQuery.data?.items ?? []).map((inv: InvoiceSummaryDto) => (
+                    <tr key={inv.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 text-sm font-medium text-slate-900">
+                        <Link
+                          href={`/invoices/${inv.id}` as Route}
+                          className="text-brand-700 hover:underline"
+                        >
+                          #{inv.invoiceNumber}
+                        </Link>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-600">
+                        {inv.serviceNameSnapshot ?? '-'}
+                      </td>
+                      <td className="px-4 py-3 text-right text-sm font-medium text-slate-900">
+                        ${(inv.totalCents / 100).toFixed(2)}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-600">
+                        {inv.dueDate ?? 'Upon receipt'}
+                      </td>
+                      <td className="px-4 py-3 text-sm capitalize text-slate-700">
+                        {inv.status === 'past_due' ? 'Past Due' : inv.status}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
     </div>

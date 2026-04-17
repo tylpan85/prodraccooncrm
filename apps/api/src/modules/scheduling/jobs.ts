@@ -10,6 +10,7 @@ import {
 } from '@openclaw/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { auditLog } from '../../lib/audit.js';
 import { ApiError } from '../../lib/error-envelope.js';
 import { requireAuth } from '../auth/guard.js';
 
@@ -204,11 +205,12 @@ export async function jobsRoutes(fastify: FastifyInstance) {
 
     const tags = body.tags ? dedupeTags(body.tags) : [];
     const orgId = req.auth.orgId;
+    const actorUserId = req.auth.sub;
 
     const job = await prisma.$transaction(async (tx) => {
       const jobNumber = await nextJobNumber(orgId, tx);
 
-      return tx.job.create({
+      const created = await tx.job.create({
         data: {
           organizationId: orgId,
           jobNumber,
@@ -227,6 +229,15 @@ export async function jobsRoutes(fastify: FastifyInstance) {
         },
         include: JOB_INCLUDE,
       });
+      await auditLog(tx, {
+        organizationId: orgId,
+        actorUserId,
+        entityType: 'job',
+        entityId: created.id,
+        action: 'create',
+        payload: { jobNumber: created.jobNumber, customerId },
+      });
+      return created;
     });
 
     return reply.code(201).send({ item: jobDto(job) });
@@ -345,6 +356,14 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       include: JOB_INCLUDE,
     });
 
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'job',
+      entityId: id,
+      action: 'update',
+    });
+
     return reply.send({ item: jobDto(updated) });
   });
 
@@ -379,6 +398,14 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       include: JOB_INCLUDE,
     });
 
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'job',
+      entityId: id,
+      action: 'schedule',
+    });
+
     return reply.send({ item: jobDto(updated) });
   });
 
@@ -400,6 +427,14 @@ export async function jobsRoutes(fastify: FastifyInstance) {
         scheduledEndAt: null,
       },
       include: JOB_INCLUDE,
+    });
+
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'job',
+      entityId: id,
+      action: 'unschedule',
     });
 
     return reply.send({ item: jobDto(updated) });
@@ -424,6 +459,15 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       include: JOB_INCLUDE,
     });
 
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'job',
+      entityId: id,
+      action: 'assign',
+      payload: { assigneeTeamMemberId: body.assigneeTeamMemberId },
+    });
+
     return reply.send({ item: jobDto(updated) });
   });
 
@@ -441,6 +485,14 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       where: { id },
       data: { assigneeTeamMemberId: null },
       include: JOB_INCLUDE,
+    });
+
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'job',
+      entityId: id,
+      action: 'unassign',
     });
 
     return reply.send({ item: jobDto(updated) });
@@ -462,6 +514,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     });
     if (!existing) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
     const orgId = req.auth.orgId;
+    const actorUserId = req.auth.sub;
 
     const result = await prisma.$transaction(async (tx) => {
       const job = await tx.job.update({
@@ -491,6 +544,15 @@ export async function jobsRoutes(fastify: FastifyInstance) {
           servicePriceCentsSnapshot: priceCents,
           dueDate: null,
         },
+      });
+
+      await auditLog(tx, {
+        organizationId: orgId,
+        actorUserId,
+        entityType: 'job',
+        entityId: id,
+        action: 'finish',
+        payload: { invoiceId: invoice.id },
       });
 
       return {
@@ -532,12 +594,15 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       );
     }
 
+    const orgId = req.auth.orgId;
+    const actorUserId = req.auth.sub;
+
     const result = await prisma.$transaction(async (tx) => {
       if (existing.invoice) {
         await tx.invoice.delete({ where: { id: existing.invoice.id } });
       }
 
-      return tx.job.update({
+      const reopened = await tx.job.update({
         where: { id },
         data: {
           jobStatus: 'open',
@@ -545,6 +610,16 @@ export async function jobsRoutes(fastify: FastifyInstance) {
         },
         include: JOB_INCLUDE,
       });
+
+      await auditLog(tx, {
+        organizationId: orgId,
+        actorUserId,
+        entityType: 'job',
+        entityId: id,
+        action: 'reopen',
+      });
+
+      return reopened;
     });
 
     return reply.send({ item: jobDto(result) });

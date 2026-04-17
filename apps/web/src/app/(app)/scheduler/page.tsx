@@ -217,6 +217,9 @@ export default function SchedulerPage() {
         case 'Escape':
           setSlideOver(null);
           break;
+        case 'n':
+          document.getElementById('new-menu-trigger')?.click();
+          break;
         case '/':
           e.preventDefault();
           document.getElementById('scheduler-filter')?.focus();

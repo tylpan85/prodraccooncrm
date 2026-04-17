@@ -6,6 +6,7 @@ import type { Route } from 'next';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { useState } from 'react';
+import { TableSkeleton } from '../../../../components/ui/skeleton';
 import { invoicesApi } from '../../../../lib/invoices-api';
 
 const TABS = [
@@ -76,7 +77,9 @@ export default function InvoicesPage() {
 
       {/* Table */}
       {invoicesQuery.isLoading ? (
-        <div className="mt-8 text-center text-sm text-slate-500">Loading invoices...</div>
+        <div className="mt-4">
+          <TableSkeleton rows={5} cols={6} />
+        </div>
       ) : invoices.length === 0 ? (
         <div className="mt-8 rounded-md border border-dashed border-slate-300 px-6 py-12 text-center text-sm text-slate-500">
           No invoices in this tab.

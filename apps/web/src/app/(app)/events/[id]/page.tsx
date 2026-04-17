@@ -7,6 +7,7 @@ import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Button } from '../../../../components/ui/button';
+import { DetailSkeleton } from '../../../../components/ui/skeleton';
 import { ApiClientError } from '../../../../lib/api-client';
 import { eventsApi } from '../../../../lib/events-api';
 
@@ -44,7 +45,11 @@ export default function EventDetailPage() {
   });
 
   if (eventQuery.isLoading) {
-    return <div className="px-6 py-8 text-sm text-slate-500">Loading event…</div>;
+    return (
+      <div className="mx-auto max-w-3xl px-6 py-8">
+        <DetailSkeleton />
+      </div>
+    );
   }
   if (eventQuery.error) {
     const notFound =

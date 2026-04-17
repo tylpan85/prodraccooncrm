@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button } from '../../../../components/ui/button';
 import { Input } from '../../../../components/ui/input';
 import { Label } from '../../../../components/ui/label';
+import { Skeleton } from '../../../../components/ui/skeleton';
 import { ApiClientError } from '../../../../lib/api-client';
 import { settingsApi } from '../../../../lib/settings-api';
 
@@ -309,13 +310,26 @@ export default function SettingsTeamPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
-              {teamQuery.isLoading && (
-                <tr>
-                  <td colSpan={5} className="px-4 py-6 text-sm text-slate-500">
-                    Loading team members…
-                  </td>
-                </tr>
-              )}
+              {teamQuery.isLoading &&
+                Array.from({ length: 3 }, (_, i) => (
+                  <tr key={`skel-${i}`}>
+                    <td className="px-4 py-3">
+                      <Skeleton className="h-4 w-28" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <Skeleton className="h-4 w-10" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <Skeleton className="h-4 w-16" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <Skeleton className="h-5 w-5 rounded-full" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <Skeleton className="h-4 w-20" />
+                    </td>
+                  </tr>
+                ))}
 
               {!teamQuery.isLoading && members.length === 0 && (
                 <tr>

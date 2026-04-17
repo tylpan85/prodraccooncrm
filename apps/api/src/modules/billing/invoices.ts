@@ -2,6 +2,7 @@ import { type Prisma, type PrismaClient, prisma } from '@openclaw/db';
 import { ERROR_CODES, editInvoiceRequestSchema, invoiceListQuerySchema } from '@openclaw/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { auditLog } from '../../lib/audit.js';
 import { ApiError } from '../../lib/error-envelope.js';
 import { requireAuth } from '../auth/guard.js';
 
@@ -174,6 +175,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
     const { id: jobId } = idParam.parse(req.params);
     const orgId = req.auth.orgId;
+    const actorUserId = req.auth.sub;
 
     const job = await prisma.job.findFirst({
       where: { id: jobId, organizationId: orgId },
@@ -197,7 +199,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
 
     const inv = await prisma.$transaction(async (tx) => {
       const invoiceNumber = await nextInvoiceNumber(orgId, tx);
-      return tx.invoice.create({
+      const created = await tx.invoice.create({
         data: {
           organizationId: orgId,
           invoiceNumber,
@@ -214,6 +216,15 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
         },
         include: INVOICE_INCLUDE,
       });
+      await auditLog(tx, {
+        organizationId: orgId,
+        actorUserId,
+        entityType: 'invoice',
+        entityId: created.id,
+        action: 'create',
+        payload: { jobId, invoiceNumber },
+      });
+      return created;
     });
 
     return reply.status(201).send({ item: invoiceDto(inv) });
@@ -253,6 +264,14 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
       include: INVOICE_INCLUDE,
     });
 
+    await auditLog(prisma, {
+      organizationId: orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'invoice',
+      entityId: id,
+      action: 'update',
+    });
+
     return reply.send({ item: invoiceDto(updated) });
   });
 
@@ -275,6 +294,14 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
       where: { id },
       data: { status: 'sent', sentAt: new Date() },
       include: INVOICE_INCLUDE,
+    });
+
+    await auditLog(prisma, {
+      organizationId: orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'invoice',
+      entityId: id,
+      action: 'send',
     });
 
     return reply.send({ item: invoiceDto(updated) });
@@ -310,6 +337,15 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
       include: INVOICE_INCLUDE,
     });
 
+    await auditLog(prisma, {
+      organizationId: orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'invoice',
+      entityId: id,
+      action: 'mark_paid',
+      payload: { paidCents: existing.totalCents },
+    });
+
     return reply.send({ item: invoiceDto(updated) });
   });
 
@@ -335,6 +371,14 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
       where: { id },
       data: { status: 'void', voidedAt: new Date() },
       include: INVOICE_INCLUDE,
+    });
+
+    await auditLog(prisma, {
+      organizationId: orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'invoice',
+      entityId: id,
+      action: 'void',
     });
 
     return reply.send({ item: invoiceDto(updated) });

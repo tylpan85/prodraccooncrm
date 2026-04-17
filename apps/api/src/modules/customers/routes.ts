@@ -14,6 +14,7 @@ import {
 } from '@openclaw/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { auditLog } from '../../lib/audit.js';
 import { ApiError } from '../../lib/error-envelope.js';
 import { requireAuth } from '../auth/guard.js';
 
@@ -359,6 +360,14 @@ export async function customersRoutes(fastify: FastifyInstance) {
         },
         include: CUSTOMER_INCLUDE,
       });
+      await auditLog(prisma, {
+        organizationId: req.auth.orgId,
+        actorUserId: req.auth.sub,
+        entityType: 'customer',
+        entityId: created.id,
+        action: 'create',
+        payload: { displayName },
+      });
       return reply.code(201).send({ item: customerDto(created) });
     } catch (err) {
       if (
@@ -494,6 +503,14 @@ export async function customersRoutes(fastify: FastifyInstance) {
           : {}),
       },
       include: CUSTOMER_INCLUDE,
+    });
+
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'customer',
+      entityId: id,
+      action: 'update',
     });
 
     return reply.send({ item: customerDto(updated) });

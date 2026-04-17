@@ -8,6 +8,7 @@ import { useParams } from 'next/navigation';
 import { useState } from 'react';
 import { Button } from '../../../../components/ui/button';
 import { Label } from '../../../../components/ui/label';
+import { DetailSkeleton } from '../../../../components/ui/skeleton';
 import { ApiClientError } from '../../../../lib/api-client';
 import { jobsApi } from '../../../../lib/jobs-api';
 import { settingsApi } from '../../../../lib/settings-api';
@@ -75,7 +76,11 @@ export default function JobDetailPage() {
   });
 
   if (jobQuery.isLoading) {
-    return <div className="px-6 py-8 text-sm text-slate-500">Loading job…</div>;
+    return (
+      <div className="mx-auto max-w-4xl px-6 py-8">
+        <DetailSkeleton />
+      </div>
+    );
   }
   if (jobQuery.error) {
     const notFound =

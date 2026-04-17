@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { type FormEvent, useMemo, useState } from 'react';
 import { Button } from '../../../../components/ui/button';
 import { Input } from '../../../../components/ui/input';
+import { Skeleton } from '../../../../components/ui/skeleton';
 import { ApiClientError } from '../../../../lib/api-client';
 import { settingsApi } from '../../../../lib/settings-api';
 
@@ -151,13 +152,23 @@ export default function SettingsServicesPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
-              {servicesQuery.isLoading && (
-                <tr>
-                  <td colSpan={4} className="px-4 py-6 text-sm text-slate-500">
-                    Loading services…
-                  </td>
-                </tr>
-              )}
+              {servicesQuery.isLoading &&
+                Array.from({ length: 3 }, (_, i) => (
+                  <tr key={`skel-${i}`}>
+                    <td className="px-4 py-3">
+                      <Skeleton className="h-4 w-32" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <Skeleton className="h-4 w-16" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <Skeleton className="h-4 w-12" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <Skeleton className="h-4 w-20" />
+                    </td>
+                  </tr>
+                ))}
 
               {!servicesQuery.isLoading && services.length === 0 && (
                 <tr>
