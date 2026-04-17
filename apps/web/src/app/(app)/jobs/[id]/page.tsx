@@ -25,6 +25,7 @@ function formatDate(iso: string | null): string {
     year: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
+    timeZone: 'UTC',
   });
 }
 
@@ -97,7 +98,11 @@ export default function JobDetailPage() {
     (t) => t.activeOnSchedule,
   );
 
+  const statusLabel =
+    job.scheduleState === 'scheduled' ? 'Scheduled' : job.jobStatus === 'open' ? 'Unscheduled' : job.jobStatus;
   const statusColor: Record<string, string> = {
+    Scheduled: 'bg-green-100 text-green-800',
+    Unscheduled: 'bg-yellow-100 text-yellow-800',
     open: 'bg-blue-100 text-blue-800',
     finished: 'bg-slate-200 text-slate-700',
   };
@@ -114,9 +119,9 @@ export default function JobDetailPage() {
           <div className="flex items-center gap-3">
             <h1 className="text-xl font-semibold text-slate-900">{job.jobNumber}</h1>
             <span
-              className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium capitalize ${statusColor[job.jobStatus] ?? 'bg-slate-100 text-slate-700'}`}
+              className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${statusColor[statusLabel] ?? 'bg-slate-100 text-slate-700'}`}
             >
-              {job.jobStatus}
+              {statusLabel}
             </span>
           </div>
           <p className="mt-1 text-sm text-slate-600">
@@ -132,20 +137,6 @@ export default function JobDetailPage() {
           <Link href={`/jobs/${job.id}/edit` as Route}>
             <Button variant="secondary">Edit</Button>
           </Link>
-          {job.jobStatus === 'open' && (
-            <Button onClick={() => finishMutation.mutate()} disabled={finishMutation.isPending}>
-              {finishMutation.isPending ? 'Finishing…' : 'Finish'}
-            </Button>
-          )}
-          {job.jobStatus === 'finished' && job.invoice?.status === 'draft' && (
-            <Button
-              variant="secondary"
-              onClick={() => reopenMutation.mutate()}
-              disabled={reopenMutation.isPending}
-            >
-              {reopenMutation.isPending ? 'Reopening…' : 'Reopen'}
-            </Button>
-          )}
         </div>
       </div>
 
@@ -154,7 +145,6 @@ export default function JobDetailPage() {
         <Card title="Details">
           <dl className="space-y-2 text-sm">
             <Row label="Service" value={job.serviceName ?? '—'} />
-            <Row label="Title" value={job.titleOrSummary ?? '—'} />
             <Row label="Price" value={formatCents(job.priceCents)} />
             <Row label="Lead source" value={job.leadSource ?? '—'} />
           </dl>

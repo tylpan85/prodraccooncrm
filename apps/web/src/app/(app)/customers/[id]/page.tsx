@@ -107,9 +107,6 @@ export default function CustomerDetailPage() {
           <Link href={`/jobs/new?customerId=${c.id}` as Route}>
             <Button>New job</Button>
           </Link>
-          <Button disabled title="Available in Phase 10">
-            New recurring job
-          </Button>
         </div>
       </div>
 
@@ -270,6 +267,7 @@ export default function CustomerDetailPage() {
                           ? new Date(j.scheduledStartAt!).toLocaleDateString('en-US', {
                               month: 'short',
                               day: 'numeric',
+                              timeZone: 'UTC',
                             })
                           : 'Unscheduled'}
                       </td>

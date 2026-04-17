@@ -1,16 +1,18 @@
 'use client';
 
-import type { CustomerDto, ServiceDto, TeamMemberDto } from '@openclaw/shared';
+import type { CustomerDto, RecurrenceRuleInput, ServiceDto, TeamMemberDto } from '@openclaw/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Route } from 'next';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { RecurrenceEditor } from '../../../../components/common/recurrence-editor';
 import { Button } from '../../../../components/ui/button';
 import { Input } from '../../../../components/ui/input';
 import { Label } from '../../../../components/ui/label';
 import { ApiClientError } from '../../../../lib/api-client';
 import { customersApi } from '../../../../lib/customers-api';
 import { jobsApi } from '../../../../lib/jobs-api';
+import { recurringApi } from '../../../../lib/recurring-api';
 import { settingsApi } from '../../../../lib/settings-api';
 
 export default function NewJobPage() {
@@ -30,7 +32,6 @@ export default function NewJobPage() {
     enabled: customerSearch.trim().length > 1 && !customerId,
   });
 
-  // Load preselected customer
   const preselectedQuery = useQuery({
     queryKey: ['customer', preselectedCustomerId],
     queryFn: () => customersApi.get(preselectedCustomerId!),
@@ -83,11 +84,22 @@ export default function NewJobPage() {
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState('');
 
-  // Schedule
-  const [anytime, setAnytime] = useState(true);
+  // Schedule — always visible, empty = unscheduled
   const [startAt, setStartAt] = useState('');
   const [endAt, setEndAt] = useState('');
   const [assigneeId, setAssigneeId] = useState<string | null>(null);
+
+  // Recurrence
+  const [recurrenceRule, setRecurrenceRule] = useState<RecurrenceRuleInput | null>(null);
+  const isRecurring = recurrenceRule !== null;
+  const isScheduled = startAt !== '' && endAt !== '';
+
+  // Derive scheduled date for preset labels
+  const scheduledDate = useMemo(() => {
+    if (!startAt) return null;
+    const d = new Date(startAt);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }, [startAt]);
 
   const [error, setError] = useState<string | null>(null);
 
@@ -100,9 +112,32 @@ export default function NewJobPage() {
     }
   }
 
+  // ── Submit ──────────────────────────────────────────────────────────
   const createMutation = useMutation({
     mutationFn: async () => {
       if (!customerId) throw new Error('No customer selected');
+
+      if (isRecurring) {
+        if (!isScheduled) throw new Error('Start and end times are required for recurring jobs');
+        return recurringApi.create({
+          customerId,
+          job: {
+            customerAddressId: addressId,
+            serviceId: serviceId || null,
+            titleOrSummary: titleOrSummary.trim() || null,
+            priceCents,
+            privateNotes: privateNotes.trim() || null,
+            tags: tags.length > 0 ? tags : undefined,
+          },
+          schedule: {
+            scheduledStartAt: `${startAt}:00.000Z`,
+            scheduledEndAt: `${endAt}:00.000Z`,
+            assigneeTeamMemberId: assigneeId || null,
+          },
+          recurrence: recurrenceRule,
+        });
+      }
+
       return jobsApi.create(customerId, {
         customerAddressId: addressId,
         serviceId: serviceId || null,
@@ -110,17 +145,22 @@ export default function NewJobPage() {
         priceCents,
         privateNotes: privateNotes.trim() || null,
         tags: tags.length > 0 ? tags : undefined,
-        scheduledStartAt: !anytime && startAt ? `${startAt}:00.000Z` : null,
-        scheduledEndAt: !anytime && endAt ? `${endAt}:00.000Z` : null,
-        assigneeTeamMemberId: !anytime && assigneeId ? assigneeId : null,
+        scheduledStartAt: isScheduled ? `${startAt}:00.000Z` : null,
+        scheduledEndAt: isScheduled ? `${endAt}:00.000Z` : null,
+        assigneeTeamMemberId: isScheduled && assigneeId ? assigneeId : null,
       });
     },
-    onSuccess: (job) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['jobs'] });
-      router.push(`/jobs/${job.id}` as Route);
+      queryClient.invalidateQueries({ queryKey: ['schedule'] });
+      // Navigate to scheduler on the scheduled date, or today
+      const dateParam = startAt ? startAt.slice(0, 10) : new Date().toISOString().slice(0, 10);
+      router.push(`/scheduler?view=day&date=${dateParam}` as Route);
     },
     onError: (err) => {
       if (err instanceof ApiClientError) {
+        setError(err.message);
+      } else if (err instanceof Error) {
         setError(err.message);
       } else {
         setError('Failed to create job');
@@ -260,7 +300,7 @@ export default function NewJobPage() {
           </div>
         </Section>
 
-        {/* ���─ Title / Notes / Tags ──────────────────────────────────── */}
+        {/* ── Title / Notes / Tags ──────────────────────────────────── */}
         <Section title="Details">
           <div className="space-y-4">
             <div>
@@ -322,19 +362,9 @@ export default function NewJobPage() {
           </div>
         </Section>
 
-        {/* ── Schedule ──────────────────────────────────────────────── */}
+        {/* ── Schedule + Assign + Repeat — all in one section ───────── */}
         <Section title="Schedule">
-          <label className="mb-3 flex items-center gap-2 text-sm text-slate-700">
-            <input
-              type="checkbox"
-              className="h-4 w-4 rounded border-slate-300 text-brand-600"
-              checked={anytime}
-              onChange={(e) => setAnytime(e.target.checked)}
-              disabled={saving}
-            />
-            Anytime (unscheduled)
-          </label>
-          {!anytime && (
+          <div className="space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
                 <Label>Start</Label>
@@ -356,24 +386,49 @@ export default function NewJobPage() {
                   disabled={saving}
                 />
               </div>
-              <div>
-                <Label>Assign to</Label>
-                <select
-                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                  value={assigneeId ?? ''}
-                  onChange={(e) => setAssigneeId(e.target.value || null)}
-                  disabled={saving}
-                >
-                  <option value="">Unassigned</option>
-                  {teamMembers.map((tm) => (
-                    <option key={tm.id} value={tm.id}>
-                      {tm.displayName}
-                    </option>
-                  ))}
-                </select>
-              </div>
             </div>
-          )}
+
+            <div>
+              <Label>Assign to</Label>
+              <select
+                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                value={assigneeId ?? ''}
+                onChange={(e) => setAssigneeId(e.target.value || null)}
+                disabled={saving}
+              >
+                <option value="">Unassigned</option>
+                {teamMembers.map((tm) => (
+                  <option key={tm.id} value={tm.id}>
+                    {tm.displayName}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <RecurrenceEditor
+              scheduledDate={scheduledDate}
+              value={recurrenceRule}
+              onChange={(rule) => {
+                setRecurrenceRule(rule);
+                // If user picks a repeat, clear "unscheduled" hint
+                if (rule && !isScheduled) {
+                  // They'll need to fill in dates — validation handles it
+                }
+              }}
+              disabled={saving}
+            />
+
+            {!isScheduled && (
+              <p className="text-xs text-slate-500">
+                Leave dates empty to create an unscheduled job.
+              </p>
+            )}
+            {isRecurring && !isScheduled && (
+              <p className="text-xs text-amber-600">
+                Start and end times are required for recurring jobs.
+              </p>
+            )}
+          </div>
         </Section>
 
         {/* ── Actions ───────────────────────────────────────────────── */}
@@ -381,8 +436,11 @@ export default function NewJobPage() {
           <Button type="button" variant="secondary" onClick={() => router.back()} disabled={saving}>
             Cancel
           </Button>
-          <Button type="submit" disabled={saving || !customerId || !addressId}>
-            {saving ? 'Creating…' : 'Create job'}
+          <Button
+            type="submit"
+            disabled={saving || !customerId || !addressId || (isRecurring && !isScheduled)}
+          >
+            {saving ? 'Creating…' : isRecurring ? 'Create recurring job' : 'Create job'}
           </Button>
         </div>
       </form>

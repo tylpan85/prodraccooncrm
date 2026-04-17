@@ -8,7 +8,6 @@ import { Button } from '../ui/button';
 
 const items: { href: Route; label: string }[] = [
   { href: '/jobs/new' as Route, label: 'New job' },
-  { href: '/recurring-jobs/new' as Route, label: 'New recurring job' },
   { href: '/events/new' as Route, label: 'New event' },
 ];
 

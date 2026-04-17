@@ -84,6 +84,7 @@ export default function JobsPage() {
                       ? new Date(j.scheduledStartAt).toLocaleDateString('en-US', {
                           month: 'short',
                           day: 'numeric',
+                          timeZone: 'UTC',
                         })
                       : 'Unscheduled'}
                   </td>

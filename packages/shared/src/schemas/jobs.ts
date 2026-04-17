@@ -167,6 +167,7 @@ export const jobDtoSchema = z.object({
   jobStatus: z.string(),
   finishedAt: z.string().nullable(),
   tags: z.array(z.string()),
+  recurringSeriesId: z.string().uuid().nullable(),
   invoice: z
     .object({
       id: z.string().uuid(),

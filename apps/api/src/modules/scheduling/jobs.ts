@@ -75,6 +75,7 @@ function jobDto(j: JobRecord) {
     jobStatus: j.jobStatus,
     finishedAt: j.finishedAt?.toISOString() ?? null,
     tags: j.tags.map((t) => t.tag),
+    recurringSeriesId: j.recurringSeriesId,
     invoice: j.invoice
       ? {
           id: j.invoice.id,

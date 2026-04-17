@@ -182,14 +182,14 @@ export default function InvoiceDetailPage() {
               <div className="flex justify-between">
                 <span className="text-slate-600">Created</span>
                 <span className="text-slate-900">
-                  {new Date(inv.createdAt).toLocaleDateString()}
+                  {new Date(inv.createdAt).toLocaleDateString('en-US', { timeZone: 'UTC' })}
                 </span>
               </div>
               {inv.sentAt && (
                 <div className="flex justify-between">
                   <span className="text-slate-600">Sent</span>
                   <span className="text-slate-900">
-                    {new Date(inv.sentAt).toLocaleDateString()}
+                    {new Date(inv.sentAt).toLocaleDateString('en-US', { timeZone: 'UTC' })}
                   </span>
                 </div>
               )}
@@ -197,7 +197,7 @@ export default function InvoiceDetailPage() {
                 <div className="flex justify-between">
                   <span className="text-slate-600">Paid</span>
                   <span className="text-slate-900">
-                    {new Date(inv.paidAt).toLocaleDateString()}
+                    {new Date(inv.paidAt).toLocaleDateString('en-US', { timeZone: 'UTC' })}
                   </span>
                 </div>
               )}
@@ -205,7 +205,7 @@ export default function InvoiceDetailPage() {
                 <div className="flex justify-between">
                   <span className="text-slate-600">Voided</span>
                   <span className="text-slate-900">
-                    {new Date(inv.voidedAt).toLocaleDateString()}
+                    {new Date(inv.voidedAt).toLocaleDateString('en-US', { timeZone: 'UTC' })}
                   </span>
                 </div>
               )}
