@@ -11,6 +11,7 @@ export interface JobBlock {
   scheduledEndAt: string;
   jobStatus: string;
   assigneeTeamMemberId: string | null;
+  recurringSeriesId: string | null;
 }
 
 export interface EventBlock {

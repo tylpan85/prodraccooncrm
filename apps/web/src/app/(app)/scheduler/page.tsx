@@ -19,7 +19,9 @@ import { settingsApi } from '../../../lib/settings-api';
 // ---------------------------------------------------------------------------
 
 function today(): string {
-  return new Date().toISOString().slice(0, 10);
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 function addDays(date: string, n: number): string {
@@ -39,22 +41,22 @@ function startOfMonth(date: string): string {
 }
 
 function formatDayHeader(date: string): string {
-  const d = new Date(`${date}T12:00:00Z`);
+  const [y, m, dd] = date.split('-').map(Number) as [number, number, number];
+  const d = new Date(y, m - 1, dd, 12);
   return d.toLocaleDateString('en-US', {
     weekday: 'long',
     month: 'long',
     day: 'numeric',
     year: 'numeric',
-    timeZone: 'UTC',
   });
 }
 
 function formatMonthHeader(date: string): string {
-  const d = new Date(`${date}T12:00:00Z`);
+  const [y, m, dd] = date.split('-').map(Number) as [number, number, number];
+  const d = new Date(y, m - 1, dd, 12);
   return d.toLocaleDateString('en-US', {
     month: 'long',
     year: 'numeric',
-    timeZone: 'UTC',
   });
 }
 
@@ -80,7 +82,7 @@ function isSameMonth(date: string, refDate: string): boolean {
 
 function parseHour(iso: string): number {
   const d = new Date(iso);
-  return d.getUTCHours() + d.getUTCMinutes() / 60;
+  return d.getHours() + d.getMinutes() / 60;
 }
 
 function formatTime(iso: string): string {
@@ -88,7 +90,6 @@ function formatTime(iso: string): string {
   return d.toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
-    timeZone: 'UTC',
   });
 }
 
@@ -99,7 +100,6 @@ function formatDate(iso: string): string {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
-    timeZone: 'UTC',
   });
 }
 
@@ -558,11 +558,7 @@ function MiniCalendar({
           <ChevronLeft size={14} />
         </button>
         <span className="text-xs font-medium text-slate-700">
-          {new Date(`${viewMonth}-15T12:00:00Z`).toLocaleDateString('en-US', {
-            month: 'long',
-            year: 'numeric',
-            timeZone: 'UTC',
-          })}
+          {formatMonthHeader(`${viewMonth}-15`)}
         </span>
         <button
           type="button"
@@ -614,6 +610,21 @@ function MiniCalendar({
 // Day view
 // ---------------------------------------------------------------------------
 
+interface DragPayload {
+  jobId: string;
+  recurringSeriesId: string | null;
+  originalStartIso: string;
+  originalEndIso: string;
+  originalAssigneeId: string | null;
+}
+
+interface PendingDrop {
+  jobId: string;
+  newStart: string;
+  newEnd: string;
+  newAssigneeId: string | null;
+}
+
 function DayView({
   date,
   activeTeamIds,
@@ -627,6 +638,7 @@ function DayView({
   onJobClick: (id: string) => void;
   onEventClick: (id: string) => void;
 }) {
+  const queryClient = useQueryClient();
   const dayQuery = useQuery({
     queryKey: ['schedule', 'day', date],
     queryFn: () => schedulerApi.getDay(date),
@@ -634,6 +646,110 @@ function DayView({
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const didScroll = useRef(false);
+
+  // Drag-and-drop state
+  const [draggingJobId, setDraggingJobId] = useState<string | null>(null);
+  const [hoverLaneKey, setHoverLaneKey] = useState<string | null>(null);
+  const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
+  const [showScopeDialog, setShowScopeDialog] = useState(false);
+
+  const dropMutation = useMutation({
+    mutationFn: async (vars: PendingDrop & { scope?: 'this' | 'this_and_future' }) => {
+      if (vars.scope) {
+        return jobsApi.occurrenceEdit(vars.jobId, {
+          scope: vars.scope,
+          changes: {
+            scheduledStartAt: vars.newStart,
+            scheduledEndAt: vars.newEnd,
+            assigneeTeamMemberId: vars.newAssigneeId,
+          },
+        });
+      }
+      return jobsApi.schedule(vars.jobId, {
+        scheduledStartAt: vars.newStart,
+        scheduledEndAt: vars.newEnd,
+        assigneeTeamMemberId: vars.newAssigneeId,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['schedule', 'day', date] });
+      queryClient.invalidateQueries({ queryKey: ['schedule'] });
+    },
+  });
+
+  function handleDrop(e: React.DragEvent<HTMLDivElement>, laneTeamMemberId: string | null) {
+    e.preventDefault();
+    setHoverLaneKey(null);
+    setDraggingJobId(null);
+
+    const raw = e.dataTransfer.getData('application/json');
+    if (!raw) return;
+    let payload: DragPayload;
+    try {
+      payload = JSON.parse(raw) as DragPayload;
+    } catch {
+      return;
+    }
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const offsetY = e.clientY - rect.top;
+    const droppedHour = MIN_HOUR + offsetY / HOUR_HEIGHT;
+    const snappedHour = Math.round(droppedHour * 2) / 2;
+
+    const durationMs =
+      new Date(payload.originalEndIso).getTime() - new Date(payload.originalStartIso).getTime();
+    const durationHours = durationMs / 3_600_000;
+
+    if (snappedHour < MIN_HOUR) return;
+    if (snappedHour + durationHours > MAX_HOUR) return;
+
+    const [yStr, mStr, dStr] = date.split('-');
+    const year = Number.parseInt(yStr ?? '', 10);
+    const month = Number.parseInt(mStr ?? '', 10);
+    const day = Number.parseInt(dStr ?? '', 10);
+    if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return;
+
+    const hour = Math.floor(snappedHour);
+    const minute = Math.round((snappedHour - hour) * 60);
+    const newStart = new Date(year, month - 1, day, hour, minute, 0, 0);
+    const newEnd = new Date(newStart.getTime() + durationMs);
+    const newStartIso = newStart.toISOString();
+    const newEndIso = newEnd.toISOString();
+
+    if (
+      payload.originalStartIso === newStartIso &&
+      payload.originalEndIso === newEndIso &&
+      payload.originalAssigneeId === laneTeamMemberId
+    ) {
+      return;
+    }
+
+    const drop: PendingDrop = {
+      jobId: payload.jobId,
+      newStart: newStartIso,
+      newEnd: newEndIso,
+      newAssigneeId: laneTeamMemberId,
+    };
+
+    if (payload.recurringSeriesId) {
+      setPendingDrop(drop);
+      setShowScopeDialog(true);
+    } else {
+      dropMutation.mutate(drop);
+    }
+  }
+
+  function handleScopeChoice(scope: 'this' | 'this_and_future') {
+    if (!pendingDrop) return;
+    dropMutation.mutate({ ...pendingDrop, scope });
+    setPendingDrop(null);
+    setShowScopeDialog(false);
+  }
+
+  function cancelScopeDialog() {
+    setPendingDrop(null);
+    setShowScopeDialog(false);
+  }
 
   // Scroll to DEFAULT_START_HOUR on first load
   useEffect(() => {
@@ -647,13 +763,13 @@ function DayView({
   const isToday = date === today();
   const [nowHour, setNowHour] = useState(() => {
     const n = new Date();
-    return n.getUTCHours() + n.getUTCMinutes() / 60;
+    return n.getHours() + n.getMinutes() / 60;
   });
   useEffect(() => {
     if (!isToday) return;
     const interval = setInterval(() => {
       const n = new Date();
-      setNowHour(n.getUTCHours() + n.getUTCMinutes() / 60);
+      setNowHour(n.getHours() + n.getMinutes() / 60);
     }, 60_000);
     return () => clearInterval(interval);
   }, [isToday]);
@@ -748,9 +864,12 @@ function DayView({
         </div>
 
         {/* Lanes */}
-        {visibleLanes.map((lane) => (
+        {visibleLanes.map((lane) => {
+          const laneKey = lane.teamMemberId ?? '__unassigned';
+          const isHovered = hoverLaneKey === laneKey;
+          return (
           <div
-            key={lane.teamMemberId ?? '__unassigned'}
+            key={laneKey}
             className="flex-1 border-r border-slate-200"
             style={{ minWidth: 180, maxWidth: 320 }}
           >
@@ -761,15 +880,33 @@ function DayView({
                 {lane.displayName}
               </span>
             </div>
-            {/* Time grid */}
-            <div className="relative" style={{ height: totalHours * HOUR_HEIGHT }}>
+            {/* Time grid (drop target) */}
+            <div
+              className={cn(
+                'relative transition-colors',
+                isHovered && 'bg-brand-50',
+              )}
+              style={{ height: totalHours * HOUR_HEIGHT }}
+              onDragOver={(e) => {
+                if (!draggingJobId) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                if (hoverLaneKey !== laneKey) setHoverLaneKey(laneKey);
+              }}
+              onDragLeave={(e) => {
+                // Only clear if leaving the grid for a non-child element
+                if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+                if (hoverLaneKey === laneKey) setHoverLaneKey(null);
+              }}
+              onDrop={(e) => handleDrop(e, lane.teamMemberId)}
+            >
               {/* Hour lines */}
               {Array.from({ length: totalHours }, (_, i) => {
                 const hourKey = MIN_HOUR + i;
                 return (
                   <div
                     key={`hour-${hourKey}`}
-                    className="absolute left-0 right-0 border-t border-slate-100"
+                    className="pointer-events-none absolute left-0 right-0 border-t border-slate-100"
                     style={{ top: i * HOUR_HEIGHT }}
                   />
                 );
@@ -778,7 +915,7 @@ function DayView({
               {/* Now line */}
               {isToday && nowHour >= MIN_HOUR && nowHour <= MAX_HOUR && (
                 <div
-                  className="absolute left-0 right-0 z-10 border-t-2 border-red-500"
+                  className="pointer-events-none absolute left-0 right-0 z-10 border-t-2 border-red-500"
                   style={{ top: (nowHour - MIN_HOUR) * HOUR_HEIGHT }}
                 >
                   <div className="absolute -left-1 -top-1.5 h-3 w-3 rounded-full bg-red-500" />
@@ -792,16 +929,35 @@ function DayView({
                 const duration = Math.max(end - start, MIN_BLOCK_DURATION);
                 const top = (start - MIN_HOUR) * HOUR_HEIGHT;
                 const height = duration * HOUR_HEIGHT;
+                const isDragging = draggingJobId === job.id;
 
                 return (
                   <button
                     key={job.id}
                     type="button"
+                    draggable
+                    onDragStart={(e) => {
+                      const payload: DragPayload = {
+                        jobId: job.id,
+                        recurringSeriesId: job.recurringSeriesId,
+                        originalStartIso: job.scheduledStartAt,
+                        originalEndIso: job.scheduledEndAt,
+                        originalAssigneeId: job.assigneeTeamMemberId,
+                      };
+                      e.dataTransfer.setData('application/json', JSON.stringify(payload));
+                      e.dataTransfer.effectAllowed = 'move';
+                      setDraggingJobId(job.id);
+                    }}
+                    onDragEnd={() => {
+                      setDraggingJobId(null);
+                      setHoverLaneKey(null);
+                    }}
                     className={cn(
-                      'absolute left-1 right-1 overflow-hidden rounded px-2 py-1 text-left text-xs shadow-sm transition-shadow hover:shadow-md',
+                      'absolute left-1 right-1 cursor-grab overflow-hidden rounded px-2 py-1 text-left text-xs shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing',
                       job.jobStatus === 'finished'
                         ? 'bg-slate-100 text-slate-600'
                         : 'bg-blue-50 text-blue-900 border border-blue-200',
+                      isDragging && 'opacity-50',
                     )}
                     style={{ top, height: Math.max(height, 28), zIndex: 5 }}
                     onClick={() => onJobClick(job.id)}
@@ -846,8 +1002,43 @@ function DayView({
               })}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
+
+      {/* Scope dialog for recurring job drops */}
+      {showScopeDialog && pendingDrop && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">Move recurring job</h3>
+            <p className="mt-2 text-sm text-slate-600">
+              This job is part of a recurring series. Apply changes to:
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <Button
+                onClick={() => handleScopeChoice('this')}
+                disabled={dropMutation.isPending}
+              >
+                {dropMutation.isPending ? 'Saving…' : 'Only this job'}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => handleScopeChoice('this_and_future')}
+                disabled={dropMutation.isPending}
+              >
+                {dropMutation.isPending ? 'Saving…' : 'This and all future jobs'}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={cancelScopeDialog}
+                disabled={dropMutation.isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

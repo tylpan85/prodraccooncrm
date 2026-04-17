@@ -28,6 +28,7 @@ interface JobBlock {
   scheduledEndAt: string;
   jobStatus: string;
   assigneeTeamMemberId: string | null;
+  recurringSeriesId: string | null;
 }
 
 interface EventBlock {
@@ -130,6 +131,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         scheduledEndAt: j.scheduledEndAt!.toISOString(),
         jobStatus: j.jobStatus,
         assigneeTeamMemberId: j.assigneeTeamMemberId,
+        recurringSeriesId: j.recurringSeriesId,
       });
     }
 
@@ -237,6 +239,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         scheduledEndAt: j.scheduledEndAt!.toISOString(),
         jobStatus: j.jobStatus,
         assigneeTeamMemberId: j.assigneeTeamMemberId,
+        recurringSeriesId: j.recurringSeriesId,
         assigneeColor: tm?.color ?? '#6b7280',
       });
     }
