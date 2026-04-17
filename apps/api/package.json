@@ -17,6 +17,7 @@
     "@fastify/cors": "^10.0.1",
     "@fastify/rate-limit": "^10.1.1",
     "@openclaw/db": "workspace:*",
+    "@openclaw/recurrence": "workspace:*",
     "@openclaw/shared": "workspace:*",
     "argon2": "^0.41.1",
     "date-fns": "^4.1.0",

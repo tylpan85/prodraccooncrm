@@ -7,6 +7,7 @@ import { customersRoutes } from '../src/modules/customers/routes.js';
 import { identityRoutes } from '../src/modules/identity/routes.js';
 import { eventsRoutes } from '../src/modules/scheduling/events.js';
 import { jobsRoutes } from '../src/modules/scheduling/jobs.js';
+import { recurringRoutes } from '../src/modules/scheduling/recurring.js';
 import { scheduleRoutes } from '../src/modules/scheduling/schedule.js';
 import { healthRoutes } from '../src/routes/health.js';
 
@@ -21,6 +22,7 @@ export async function buildTestApp(): Promise<FastifyInstance> {
   await app.register(customersRoutes);
   await app.register(jobsRoutes);
   await app.register(eventsRoutes);
+  await app.register(recurringRoutes);
   await app.register(scheduleRoutes);
   await app.ready();
   return app;

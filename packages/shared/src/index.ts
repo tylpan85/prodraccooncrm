@@ -85,3 +85,17 @@ export type {
   UpdateEventRequest,
   EventDto,
 } from './schemas/events';
+export {
+  recurrenceRuleInputSchema,
+  attachRecurrenceRequestSchema,
+  createRecurringJobRequestSchema,
+  occurrenceEditRequestSchema,
+  occurrenceDeleteRequestSchema,
+} from './schemas/recurring';
+export type {
+  RecurrenceRuleInput,
+  AttachRecurrenceRequest,
+  CreateRecurringJobRequest,
+  OccurrenceEditRequest,
+  OccurrenceDeleteRequest,
+} from './schemas/recurring';

@@ -35,6 +35,9 @@ importers:
       '@openclaw/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@openclaw/recurrence':
+        specifier: workspace:*
+        version: link:../../packages/recurrence
       '@openclaw/shared':
         specifier: workspace:*
         version: link:../../packages/shared
