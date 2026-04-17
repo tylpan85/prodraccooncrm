@@ -509,6 +509,41 @@ export async function customersRoutes(fastify: FastifyInstance) {
       select: { id: true },
     });
     if (!exists) throw new ApiError(ERROR_CODES.CUSTOMER_NOT_FOUND, 404, 'Customer not found');
-    return reply.send({ items: [], nextCursor: null });
+
+    const invoices = await prisma.invoice.findMany({
+      where: { customerId: id, organizationId: req.auth.orgId },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: {
+        id: true,
+        invoiceNumber: true,
+        status: true,
+        totalCents: true,
+        amountDueCents: true,
+        dueDate: true,
+        serviceNameSnapshot: true,
+        createdAt: true,
+      },
+    });
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    return reply.send({
+      items: invoices.map((inv) => ({
+        id: inv.id,
+        invoiceNumber: inv.invoiceNumber,
+        serviceNameSnapshot: inv.serviceNameSnapshot,
+        totalCents: inv.totalCents,
+        amountDueCents: inv.amountDueCents,
+        dueDate: inv.dueDate?.toISOString().slice(0, 10) ?? null,
+        status:
+          inv.status === 'sent' && inv.dueDate && inv.dueDate < today && inv.amountDueCents > 0
+            ? 'past_due'
+            : inv.status,
+        createdAt: inv.createdAt.toISOString(),
+      })),
+      nextCursor: null,
+    });
   });
 }

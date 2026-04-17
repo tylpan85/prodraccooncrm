@@ -86,6 +86,18 @@ export type {
   EventDto,
 } from './schemas/events';
 export {
+  invoiceListQuerySchema,
+  editInvoiceRequestSchema,
+  invoiceDtoSchema,
+  invoiceSummaryDtoSchema,
+} from './schemas/invoices';
+export type {
+  InvoiceListQuery,
+  EditInvoiceRequest,
+  InvoiceDto,
+  InvoiceSummaryDto,
+} from './schemas/invoices';
+export {
   recurrenceRuleInputSchema,
   attachRecurrenceRequestSchema,
   createRecurringJobRequestSchema,

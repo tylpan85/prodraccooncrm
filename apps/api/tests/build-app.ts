@@ -3,6 +3,7 @@ import rateLimit from '@fastify/rate-limit';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { errorHandler } from '../src/lib/error-envelope.js';
 import { authRoutes } from '../src/modules/auth/routes.js';
+import { invoicesRoutes } from '../src/modules/billing/invoices.js';
 import { customersRoutes } from '../src/modules/customers/routes.js';
 import { identityRoutes } from '../src/modules/identity/routes.js';
 import { eventsRoutes } from '../src/modules/scheduling/events.js';
@@ -24,6 +25,7 @@ export async function buildTestApp(): Promise<FastifyInstance> {
   await app.register(eventsRoutes);
   await app.register(recurringRoutes);
   await app.register(scheduleRoutes);
+  await app.register(invoicesRoutes);
   await app.ready();
   return app;
 }
