@@ -1,17 +1,58 @@
 'use client';
 
-import type { CustomerDto, JobDto, ServiceDto } from '@openclaw/shared';
+import type { CustomerDto, JobDto, RecurrenceRuleInput, ServiceDto, TeamMemberDto } from '@openclaw/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Route } from 'next';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import { RecurrenceEditor } from '../../../../../components/common/recurrence-editor';
 import { Button } from '../../../../../components/ui/button';
 import { Input } from '../../../../../components/ui/input';
 import { Label } from '../../../../../components/ui/label';
 import { ApiClientError } from '../../../../../lib/api-client';
 import { customersApi } from '../../../../../lib/customers-api';
 import { jobsApi } from '../../../../../lib/jobs-api';
+import {
+  type RecurringSeriesDto,
+  recurringApi,
+} from '../../../../../lib/recurring-api';
 import { settingsApi } from '../../../../../lib/settings-api';
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Convert ISO string to local datetime-local value (YYYY-MM-DDTHH:MM) */
+function isoToLocal(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Convert local datetime-local value back to ISO string */
+function localToIso(local: string): string {
+  return new Date(local).toISOString();
+}
+
+/** Convert a RecurringSeriesDto to RecurrenceRuleInput for the editor */
+function seriesToRule(series: RecurringSeriesDto): RecurrenceRuleInput {
+  return {
+    recurrenceFrequency: series.recurrenceFrequency,
+    recurrenceInterval: series.recurrenceInterval,
+    recurrenceEndMode: series.recurrenceEndMode,
+    recurrenceOccurrenceCount: series.recurrenceOccurrenceCount ?? null,
+    recurrenceEndDate: series.recurrenceEndDate ?? null,
+    recurrenceDayOfWeek: (series.recurrenceDayOfWeek as RecurrenceRuleInput['recurrenceDayOfWeek']) ?? null,
+    recurrenceDayOfMonth: series.recurrenceDayOfMonth ?? null,
+    recurrenceOrdinal: (series.recurrenceOrdinal as RecurrenceRuleInput['recurrenceOrdinal']) ?? null,
+    recurrenceMonthOfYear: (series.recurrenceMonthOfYear as RecurrenceRuleInput['recurrenceMonthOfYear']) ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 export default function EditJobPage() {
   const params = useParams<{ id: string }>();
@@ -30,7 +71,19 @@ export default function EditJobPage() {
     queryFn: () => settingsApi.listServices(false),
   });
 
+  const teamMembersQuery = useQuery({
+    queryKey: ['team-members'],
+    queryFn: () => settingsApi.listTeamMembers(),
+  });
+
   const job = jobQuery.data as JobDto | undefined;
+  const isRecurring = !!job?.recurringSeriesId;
+
+  const seriesQuery = useQuery({
+    queryKey: ['series-for-job', id],
+    queryFn: () => recurringApi.getSeriesForJob(id),
+    enabled: isRecurring,
+  });
 
   const customerQuery = useQuery({
     queryKey: ['customer', job?.customerId],
@@ -39,45 +92,98 @@ export default function EditJobPage() {
   });
 
   const [serviceId, setServiceId] = useState<string | null>(null);
-  const [titleOrSummary, setTitleOrSummary] = useState('');
   const [priceCents, setPriceCents] = useState(0);
   const [priceDisplay, setPriceDisplay] = useState('0.00');
   const [addressId, setAddressId] = useState('');
   const [privateNotes, setPrivateNotes] = useState('');
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState('');
+  const [scheduledStart, setScheduledStart] = useState('');
+  const [scheduledEnd, setScheduledEnd] = useState('');
+  const [assigneeTeamMemberId, setAssigneeTeamMemberId] = useState<string | null>(null);
+  const [recurrenceRule, setRecurrenceRule] = useState<RecurrenceRuleInput | null>(null);
+  const [recurrenceRuleInitialized, setRecurrenceRuleInitialized] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [initialized, setInitialized] = useState(false);
+  const [showScopeDialog, setShowScopeDialog] = useState(false);
 
   useEffect(() => {
     if (job && !initialized) {
       setServiceId(job.serviceId);
-      setTitleOrSummary(job.titleOrSummary ?? '');
       setPriceCents(job.priceCents);
       setPriceDisplay((job.priceCents / 100).toFixed(2));
       setAddressId(job.customerAddressId);
       setPrivateNotes(job.privateNotes ?? '');
       setTags([...job.tags]);
+      setScheduledStart(isoToLocal(job.scheduledStartAt));
+      setScheduledEnd(isoToLocal(job.scheduledEndAt));
+      setAssigneeTeamMemberId(job.assigneeTeamMemberId);
       setInitialized(true);
     }
   }, [job, initialized]);
 
+  // Initialize recurrence rule from series data
+  const seriesData = seriesQuery.data as RecurringSeriesDto | null | undefined;
+  useEffect(() => {
+    if (seriesData && !recurrenceRuleInitialized) {
+      setRecurrenceRule(seriesToRule(seriesData));
+      setRecurrenceRuleInitialized(true);
+    }
+  }, [seriesData, recurrenceRuleInitialized]);
+
   const services: ServiceDto[] = servicesQuery.data?.items ?? [];
+  const teamMembers: TeamMemberDto[] = teamMembersQuery.data?.items ?? [];
   const customer: CustomerDto | undefined = customerQuery.data;
 
+  // ------- Mutations -------
+
+  function invalidateAll() {
+    queryClient.invalidateQueries({ queryKey: ['job', id] });
+    queryClient.invalidateQueries({ queryKey: ['jobs'] });
+    queryClient.invalidateQueries({ queryKey: ['schedule'] });
+    queryClient.invalidateQueries({ queryKey: ['series-for-job', id] });
+  }
+
+  function buildChanges() {
+    return {
+      customerAddressId: addressId || undefined,
+      serviceId: serviceId,
+      priceCents,
+      privateNotes: privateNotes.trim() || null,
+      tags,
+      ...(scheduledStart ? { scheduledStartAt: localToIso(scheduledStart) } : {}),
+      ...(scheduledEnd ? { scheduledEndAt: localToIso(scheduledEnd) } : {}),
+      assigneeTeamMemberId: assigneeTeamMemberId,
+    };
+  }
+
+  /** Check if recurrence rule was changed from the original series values */
+  function hasRecurrenceRuleChanged(): boolean {
+    if (!seriesData || !recurrenceRule) return false;
+    const original = seriesToRule(seriesData);
+    return JSON.stringify(original) !== JSON.stringify(recurrenceRule);
+  }
+
+  // Non-recurring: update fields + reschedule
   const updateMutation = useMutation({
-    mutationFn: () =>
-      jobsApi.update(id, {
+    mutationFn: async () => {
+      await jobsApi.update(id, {
         customerAddressId: addressId || undefined,
         serviceId: serviceId,
-        titleOrSummary: titleOrSummary.trim() || null,
         priceCents,
         privateNotes: privateNotes.trim() || null,
         tags,
-      }),
+      });
+      if (scheduledStart && scheduledEnd) {
+        await jobsApi.schedule(id, {
+          scheduledStartAt: localToIso(scheduledStart),
+          scheduledEndAt: localToIso(scheduledEnd),
+          assigneeTeamMemberId: assigneeTeamMemberId,
+        });
+      }
+    },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['job', id] });
-      queryClient.invalidateQueries({ queryKey: ['jobs'] });
+      invalidateAll();
       router.push(`/jobs/${id}` as Route);
     },
     onError: (err) => {
@@ -85,7 +191,47 @@ export default function EditJobPage() {
     },
   });
 
-  const saving = updateMutation.isPending;
+  // Recurring: occurrence-edit
+  const occurrenceEditMutation = useMutation({
+    mutationFn: (scope: 'this' | 'this_and_future') => {
+      const body: {
+        scope: 'this' | 'this_and_future';
+        changes: ReturnType<typeof buildChanges>;
+        recurrenceRule?: RecurrenceRuleInput;
+      } = { scope, changes: buildChanges() };
+
+      // Only include recurrence rule changes with this_and_future scope
+      if (scope === 'this_and_future' && hasRecurrenceRuleChanged() && recurrenceRule) {
+        body.recurrenceRule = recurrenceRule;
+      }
+
+      return jobsApi.occurrenceEdit(id, body);
+    },
+    onSuccess: () => {
+      invalidateAll();
+      router.push(`/jobs/${id}` as Route);
+    },
+    onError: (err) => {
+      setError(err instanceof ApiClientError ? err.message : 'Failed to update');
+    },
+  });
+
+  const saving = updateMutation.isPending || occurrenceEditMutation.isPending;
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (isRecurring) {
+      setShowScopeDialog(true);
+    } else {
+      updateMutation.mutate();
+    }
+  }
+
+  function handleScopeChoice(scope: 'this' | 'this_and_future') {
+    setShowScopeDialog(false);
+    occurrenceEditMutation.mutate(scope);
+  }
 
   if (jobQuery.isLoading) {
     return <div className="px-6 py-8 text-sm text-slate-500">Loading…</div>;
@@ -94,22 +240,105 @@ export default function EditJobPage() {
     return <div className="px-6 py-8 text-sm text-slate-700">Job not found.</div>;
   }
 
+  const scheduleSummary = (() => {
+    if (!job?.scheduledStartAt || !job?.scheduledEndAt) return null;
+    const s = new Date(job.scheduledStartAt);
+    const e = new Date(job.scheduledEndAt);
+    const datePart = s.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    });
+    const startTime = s.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    const endTime = e.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    return `${datePart} · ${startTime} – ${endTime}`;
+  })();
+
   return (
     <div className="mx-auto max-w-3xl px-6 py-8">
       <h1 className="text-xl font-semibold text-slate-900">Edit {job.jobNumber}</h1>
+      <div className="mt-1 space-y-0.5">
+        <p className="text-sm text-slate-700">
+          <span className="font-medium">{job.customerDisplayName}</span>
+          {job.serviceName && <span className="text-slate-500"> · {job.serviceName}</span>}
+        </p>
+        {scheduleSummary && (
+          <p className="text-sm text-slate-500">{scheduleSummary}</p>
+        )}
+        {job.assigneeDisplayName && (
+          <p className="text-sm text-slate-500">Assigned to {job.assigneeDisplayName}</p>
+        )}
+      </div>
 
       {error && (
         <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>
       )}
 
-      <form
-        className="mt-6 space-y-6"
-        onSubmit={(e) => {
-          e.preventDefault();
-          setError(null);
-          updateMutation.mutate();
-        }}
-      >
+      <form className="mt-6 space-y-6" onSubmit={handleSubmit}>
+        <Section title="Schedule">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div>
+              <Label>Start</Label>
+              <Input
+                className="mt-1"
+                type="datetime-local"
+                value={scheduledStart}
+                onChange={(e) => setScheduledStart(e.target.value)}
+                disabled={saving}
+              />
+            </div>
+            <div>
+              <Label>End</Label>
+              <Input
+                className="mt-1"
+                type="datetime-local"
+                value={scheduledEnd}
+                onChange={(e) => setScheduledEnd(e.target.value)}
+                disabled={saving}
+              />
+            </div>
+          </div>
+          <div className="mt-4">
+            <Label>Assignee</Label>
+            <select
+              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+              value={assigneeTeamMemberId ?? ''}
+              onChange={(e) => setAssigneeTeamMemberId(e.target.value || null)}
+              disabled={saving}
+            >
+              <option value="">Unassigned</option>
+              {teamMembers
+                .filter((tm) => tm.activeOnSchedule)
+                .map((tm) => (
+                  <option key={tm.id} value={tm.id}>
+                    {tm.displayName}
+                  </option>
+                ))}
+            </select>
+          </div>
+        </Section>
+
+        {isRecurring && (
+          <Section title="Recurrence">
+            {seriesQuery.isLoading ? (
+              <p className="text-sm text-slate-500">Loading recurrence rule…</p>
+            ) : (
+              <RecurrenceEditor
+                scheduledDate={scheduledStart ? new Date(scheduledStart) : null}
+                value={recurrenceRule}
+                onChange={setRecurrenceRule}
+                disabled={saving}
+              />
+            )}
+            {hasRecurrenceRuleChanged() && (
+              <p className="mt-2 text-xs text-amber-600">
+                Recurrence rule changes will only apply when saving with "This and all future jobs".
+              </p>
+            )}
+          </Section>
+        )}
+
         <Section title="Address">
           {customer && customer.addresses.length > 0 ? (
             <select
@@ -170,16 +399,6 @@ export default function EditJobPage() {
 
         <Section title="Details">
           <div className="space-y-4">
-            <div>
-              <Label>Title / Summary</Label>
-              <Input
-                className="mt-1"
-                value={titleOrSummary}
-                onChange={(e) => setTitleOrSummary(e.target.value)}
-                maxLength={255}
-                disabled={saving}
-              />
-            </div>
             <div>
               <Label>Private notes</Label>
               <textarea
@@ -243,6 +462,40 @@ export default function EditJobPage() {
           </Button>
         </div>
       </form>
+
+      {/* Recurring scope dialog */}
+      {showScopeDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">Edit recurring job</h3>
+            <p className="mt-2 text-sm text-slate-600">
+              This job is part of a recurring series. Apply changes to:
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <Button
+                onClick={() => handleScopeChoice('this')}
+                disabled={saving}
+              >
+                {saving ? 'Saving…' : 'Only this job'}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => handleScopeChoice('this_and_future')}
+                disabled={saving}
+              >
+                {saving ? 'Saving…' : 'This and all future jobs'}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => setShowScopeDialog(false)}
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

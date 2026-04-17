@@ -92,6 +92,21 @@ function formatTime(iso: string): string {
   });
 }
 
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'UTC',
+  });
+}
+
+function formatScheduleRange(startIso: string, endIso: string): string {
+  return `${formatDate(startIso)} · ${formatTime(startIso)} – ${formatTime(endIso)}`;
+}
+
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
@@ -1054,7 +1069,6 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
       </div>
 
       <dl className="space-y-2 text-sm">
-        <DetailRow label="Title" value={job.titleOrSummary ?? '—'} />
         <DetailRow label="Service" value={job.serviceName ?? '—'} />
         <DetailRow label="Price" value={formatCents(job.priceCents)} />
         <DetailRow label="Lead source" value={job.leadSource ?? '—'} />
@@ -1062,7 +1076,7 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
           label="Schedule"
           value={
             job.scheduleState === 'scheduled' && job.scheduledStartAt && job.scheduledEndAt
-              ? `${formatTime(job.scheduledStartAt)} – ${formatTime(job.scheduledEndAt)}`
+              ? formatScheduleRange(job.scheduledStartAt, job.scheduledEndAt)
               : 'Unscheduled'
           }
         />

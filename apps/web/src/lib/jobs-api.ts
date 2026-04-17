@@ -3,6 +3,7 @@ import type {
   CreateJobRequest,
   JobDto,
   JobSummaryDto,
+  OccurrenceEditRequest,
   ScheduleJobRequest,
   UpdateJobRequest,
 } from '@openclaw/shared';
@@ -50,6 +51,11 @@ export const jobsApi = {
       { method: 'POST' },
     ),
   reopen: (id: string) => apiItem<JobDto>(`/api/jobs/${id}/reopen`, { method: 'POST' }),
+  occurrenceEdit: (id: string, body: OccurrenceEditRequest) =>
+    apiFetch<{ item: { id: string; scope: string } }>(`/api/jobs/${id}/occurrence-edit`, {
+      method: 'POST',
+      body,
+    }),
   listForCustomer: (customerId: string) =>
     apiItems<JobSummaryDto>(`/api/customers/${customerId}/jobs`),
 };
