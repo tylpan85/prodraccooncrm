@@ -40,6 +40,14 @@ enum JobStatus {
   finished
 }
 
+enum JobStage {
+  scheduled
+  confirmation_sent
+  confirmed
+  job_done
+  cancelled
+}
+
 enum InvoiceStatus {
   draft
   sent
@@ -324,6 +332,7 @@ model Job {
   scheduledEndAt           DateTime?     @map("scheduled_end_at") @db.Timestamptz(6)
   assigneeTeamMemberId     String?       @map("assignee_team_member_id") @db.Uuid
   jobStatus                JobStatus     @default(open) @map("job_status")
+  jobStage                 JobStage      @default(scheduled) @map("job_stage")
   finishedAt               DateTime?     @map("finished_at") @db.Timestamptz(6)
   recurringSeriesId        String?       @map("recurring_series_id") @db.Uuid
   occurrenceIndex          Int?          @map("occurrence_index")

@@ -141,6 +141,7 @@ export const jobSummaryDtoSchema = z.object({
   assigneeTeamMemberId: z.string().uuid().nullable(),
   assigneeDisplayName: z.string().nullable(),
   jobStatus: z.string(),
+  jobStage: z.string(),
   finishedAt: z.string().nullable(),
 });
 
@@ -165,6 +166,7 @@ export const jobDtoSchema = z.object({
   assigneeTeamMemberId: z.string().uuid().nullable(),
   assigneeDisplayName: z.string().nullable(),
   jobStatus: z.string(),
+  jobStage: z.string(),
   finishedAt: z.string().nullable(),
   tags: z.array(z.string()),
   recurringSeriesId: z.string().uuid().nullable(),

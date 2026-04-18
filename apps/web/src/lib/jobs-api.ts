@@ -52,6 +52,8 @@ export const jobsApi = {
       { method: 'POST' },
     ),
   reopen: (id: string) => apiItem<JobDto>(`/api/jobs/${id}/reopen`, { method: 'POST' }),
+  setStage: (id: string, body: { stage: string; scope?: 'this' | 'this_and_future' }) =>
+    apiItem<JobDto>(`/api/jobs/${id}/stage`, { method: 'POST', body }),
   occurrenceEdit: (id: string, body: OccurrenceEditRequest) =>
     apiFetch<{ item: { id: string; scope: string } }>(`/api/jobs/${id}/occurrence-edit`, {
       method: 'POST',

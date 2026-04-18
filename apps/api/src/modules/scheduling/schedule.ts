@@ -37,6 +37,7 @@ interface JobBlock {
   scheduledStartAt: string;
   scheduledEndAt: string;
   jobStatus: string;
+  jobStage: string;
   assigneeTeamMemberId: string | null;
   recurringSeriesId: string | null;
   recurrenceInfo: RecurrenceInfo | null;
@@ -158,6 +159,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         scheduledStartAt: j.scheduledStartAt!.toISOString(),
         scheduledEndAt: j.scheduledEndAt!.toISOString(),
         jobStatus: j.jobStatus,
+        jobStage: j.jobStage,
         assigneeTeamMemberId: j.assigneeTeamMemberId,
         recurringSeriesId: j.recurringSeriesId,
         recurrenceInfo: j.recurringSeries
@@ -294,6 +296,7 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         scheduledStartAt: j.scheduledStartAt!.toISOString(),
         scheduledEndAt: j.scheduledEndAt!.toISOString(),
         jobStatus: j.jobStatus,
+        jobStage: j.jobStage,
         assigneeTeamMemberId: j.assigneeTeamMemberId,
         recurringSeriesId: j.recurringSeriesId,
         recurrenceInfo: j.recurringSeries

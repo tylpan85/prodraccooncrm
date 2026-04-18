@@ -7,6 +7,14 @@ import Link from 'next/link';
 import { TableSkeleton } from '../../../../components/ui/skeleton';
 import { jobsApi } from '../../../../lib/jobs-api';
 
+const STAGE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  scheduled:         { bg: 'bg-slate-100',   text: 'text-slate-600', label: 'Scheduled' },
+  confirmation_sent: { bg: 'bg-blue-100',    text: 'text-blue-700',  label: 'Conf. Sent' },
+  confirmed:         { bg: 'bg-green-100',   text: 'text-green-700', label: 'Confirmed' },
+  job_done:          { bg: 'bg-emerald-600', text: 'text-white',     label: 'Done' },
+  cancelled:         { bg: 'bg-red-100',     text: 'text-red-700',   label: 'Cancelled' },
+};
+
 export default function JobsPage() {
   const jobsQuery = useQuery({
     queryKey: ['jobs'],
@@ -46,6 +54,7 @@ export default function JobsPage() {
                 <th className="px-4 py-3 font-medium">Customer</th>
                 <th className="px-4 py-3 font-medium">Title</th>
                 <th className="px-4 py-3 font-medium">Status</th>
+                <th className="px-4 py-3 font-medium">Stage</th>
                 <th className="px-4 py-3 font-medium">Schedule</th>
                 <th className="px-4 py-3 font-medium">Assignee</th>
                 <th className="px-4 py-3 font-medium text-right">Price</th>
@@ -78,6 +87,16 @@ export default function JobsPage() {
                     >
                       {j.jobStatus}
                     </span>
+                  </td>
+                  <td className="px-4 py-3 text-sm">
+                    {(() => {
+                      const s = STAGE_STYLES[j.jobStage] ?? { bg: 'bg-slate-100', text: 'text-slate-600', label: 'Scheduled' };
+                      return (
+                        <span className={`inline-flex rounded px-2 py-0.5 text-xs font-semibold ${s.bg} ${s.text}`}>
+                          {s.label}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-4 py-3 text-sm text-slate-700">
                     {j.scheduleState === 'scheduled' && j.scheduledStartAt

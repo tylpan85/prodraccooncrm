@@ -73,6 +73,7 @@ function jobDto(j: JobRecord) {
     assigneeTeamMemberId: j.assigneeTeamMemberId,
     assigneeDisplayName: j.assignee?.displayName ?? null,
     jobStatus: j.jobStatus,
+    jobStage: j.jobStage,
     finishedAt: j.finishedAt?.toISOString() ?? null,
     tags: j.tags.map((t) => t.tag),
     recurringSeriesId: j.recurringSeriesId,
@@ -297,6 +298,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       assigneeTeamMemberId: j.assigneeTeamMemberId,
       assigneeDisplayName: j.assignee?.displayName ?? null,
       jobStatus: j.jobStatus,
+      jobStage: j.jobStage,
       finishedAt: j.finishedAt?.toISOString() ?? null,
     }));
 
@@ -626,6 +628,146 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     return reply.send({ item: jobDto(result) });
   });
 
+  // ── Set stage ─────────────────────────────────────────────────────────
+  fastify.post('/api/jobs/:id/stage', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const { stage, scope } = z
+      .object({
+        stage: z.enum(['scheduled', 'confirmation_sent', 'confirmed', 'job_done', 'cancelled']),
+        scope: z.enum(['this', 'this_and_future']).optional(),
+      })
+      .parse(req.body);
+
+    const existing = await prisma.job.findFirst({
+      where: { id, organizationId: req.auth.orgId },
+      select: {
+        id: true,
+        jobStatus: true,
+        jobStage: true,
+        customerId: true,
+        titleOrSummary: true,
+        priceCents: true,
+        recurringSeriesId: true,
+        occurrenceIndex: true,
+        scheduledStartAt: true,
+      },
+    });
+    if (!existing) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
+
+    const orgId = req.auth.orgId;
+    const actorUserId = req.auth.sub;
+
+    // cancelled + this_and_future: mark this and all future occurrences in the series
+    if (stage === 'cancelled' && scope === 'this_and_future' && existing.recurringSeriesId) {
+      const cutoff = existing.occurrenceIndex ?? 0;
+      await prisma.$transaction(async (tx) => {
+        await tx.job.updateMany({
+          where: {
+            organizationId: orgId,
+            recurringSeriesId: existing.recurringSeriesId,
+            occurrenceIndex: { gte: cutoff },
+            deletedFromSeriesAt: null,
+          },
+          data: { jobStage: 'cancelled' },
+        });
+        await auditLog(tx, {
+          organizationId: orgId,
+          actorUserId,
+          entityType: 'job',
+          entityId: id,
+          action: 'stage',
+          payload: { stage, scope: 'this_and_future' },
+        });
+      });
+      const updated = await prisma.job.findFirstOrThrow({
+        where: { id },
+        include: JOB_INCLUDE,
+      });
+      return reply.send({ item: jobDto(updated) });
+    }
+
+    // job_done: set stage + finish (auto-invoice) only if not already finished
+    if (stage === 'job_done') {
+      const result = await prisma.$transaction(async (tx) => {
+        const updateData: Record<string, unknown> = { jobStage: 'job_done' };
+        if (existing.jobStatus !== 'finished') {
+          updateData.jobStatus = 'finished';
+          updateData.finishedAt = new Date();
+        }
+        const job = await tx.job.update({
+          where: { id },
+          data: updateData,
+          include: JOB_INCLUDE,
+        });
+
+        // only create invoice if none exists yet
+        let invoice = job.invoice;
+        if (!invoice) {
+          const invoiceNumber = await nextInvoiceNumber(orgId, tx);
+          invoice = await tx.invoice.create({
+            data: {
+              organizationId: orgId,
+              invoiceNumber,
+              jobId: id,
+              customerId: job.customerId,
+              status: 'draft',
+              subtotalCents: job.priceCents,
+              totalCents: job.priceCents,
+              amountDueCents: job.priceCents,
+              paidCents: 0,
+              serviceNameSnapshot: job.titleOrSummary,
+              servicePriceCentsSnapshot: job.priceCents,
+              dueDate: null,
+            },
+          });
+        }
+
+        await auditLog(tx, {
+          organizationId: orgId,
+          actorUserId,
+          entityType: 'job',
+          entityId: id,
+          action: 'stage',
+          payload: { stage: 'job_done', invoiceId: invoice.id },
+        });
+
+        return {
+          job: {
+            ...jobDto(job),
+            invoice: {
+              id: invoice.id,
+              invoiceNumber: invoice.invoiceNumber,
+              status: invoice.status,
+              totalCents: invoice.totalCents,
+            },
+          },
+        };
+      });
+      return reply.send({ item: result.job });
+    }
+
+    // all other stages: update this job only
+    const result = await prisma.$transaction(async (tx) => {
+      const job = await tx.job.update({
+        where: { id },
+        data: { jobStage: stage },
+        include: JOB_INCLUDE,
+      });
+      await auditLog(tx, {
+        organizationId: orgId,
+        actorUserId,
+        entityType: 'job',
+        entityId: id,
+        action: 'stage',
+        payload: { stage },
+      });
+      return job;
+    });
+
+    return reply.send({ item: jobDto(result) });
+  });
+
   // ── Delete (non-recurring only) ──────────────────────────────────────
   fastify.delete('/api/jobs/:id', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
@@ -684,6 +826,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
         assigneeTeamMemberId: j.assigneeTeamMemberId,
         assigneeDisplayName: j.assignee?.displayName ?? null,
         jobStatus: j.jobStatus,
+        jobStage: j.jobStage,
         finishedAt: j.finishedAt?.toISOString() ?? null,
       })),
       nextCursor: null,

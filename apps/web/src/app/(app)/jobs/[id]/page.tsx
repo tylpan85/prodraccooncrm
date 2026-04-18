@@ -17,6 +17,14 @@ function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+const STAGE_OPTIONS = [
+  { value: 'scheduled',         label: 'Scheduled',          bg: 'bg-slate-100',   text: 'text-slate-700' },
+  { value: 'confirmation_sent', label: 'Confirmation Sent',  bg: 'bg-blue-100',    text: 'text-blue-700' },
+  { value: 'confirmed',         label: 'Confirmed',          bg: 'bg-green-100',   text: 'text-green-700' },
+  { value: 'job_done',          label: 'Job Done',           bg: 'bg-emerald-600', text: 'text-white' },
+  { value: 'cancelled',         label: 'Cancelled',          bg: 'bg-red-100',     text: 'text-red-700' },
+] as const;
+
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
   return new Date(iso).toLocaleString('en-US', {
@@ -49,6 +57,7 @@ export default function JobDetailPage() {
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
   const [showAssignDialog, setShowAssignDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showCancelScopeDialog, setShowCancelScopeDialog] = useState(false);
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['job', id] });
@@ -92,6 +101,16 @@ export default function JobDetailPage() {
     onSuccess: () => invalidate(),
   });
 
+  const stageMutation = useMutation({
+    mutationFn: (vars: { stage: string; scope?: 'this' | 'this_and_future' }) =>
+      jobsApi.setStage(id, vars),
+    onSuccess: () => {
+      setShowCancelScopeDialog(false);
+      invalidate();
+    },
+    onError: (err) => setError(err instanceof ApiClientError ? err.message : 'Failed to update stage'),
+  });
+
   if (jobQuery.isLoading) {
     return (
       <div className="mx-auto max-w-4xl px-6 py-8">
@@ -132,13 +151,22 @@ export default function JobDetailPage() {
       {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-xl font-semibold text-slate-900">{job.jobNumber}</h1>
             <span
               className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${statusColor[statusLabel] ?? 'bg-slate-100 text-slate-700'}`}
             >
               {statusLabel}
             </span>
+            {(() => {
+              const opt = STAGE_OPTIONS.find((o) => o.value === (job.jobStage ?? 'scheduled'));
+              if (!opt) return null;
+              return (
+                <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-semibold ${opt.bg} ${opt.text}`}>
+                  {opt.label}
+                </span>
+              );
+            })()}
           </div>
           <p className="mt-1 text-sm text-slate-600">
             <Link
@@ -256,6 +284,35 @@ export default function JobDetailPage() {
             </dl>
           </Card>
         )}
+
+        {/* Stage */}
+        <Card title="Stage">
+          <div className="flex flex-wrap gap-2">
+            {STAGE_OPTIONS.map((opt) => {
+              const active = (job.jobStage ?? 'scheduled') === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={stageMutation.isPending}
+                  onClick={() => {
+                    if (active) return;
+                    if (opt.value === 'cancelled' && job.recurringSeriesId) {
+                      setShowCancelScopeDialog(true);
+                    } else {
+                      stageMutation.mutate({ stage: opt.value });
+                    }
+                  }}
+                  className={`rounded px-3 py-1.5 text-sm font-semibold transition-opacity ${opt.bg} ${opt.text} ${
+                    active ? 'ring-2 ring-offset-1 ring-slate-400 opacity-100' : 'opacity-50 hover:opacity-80'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        </Card>
       </div>
 
       {/* Schedule dialog */}
@@ -288,6 +345,43 @@ export default function JobDetailPage() {
             invalidate();
           }}
         />
+      )}
+
+      {/* Cancel scope dialog */}
+      {showCancelScopeDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">Cancel job</h3>
+            <p className="mt-2 text-sm text-slate-600">
+              This job is part of a recurring series. Which jobs do you want to cancel?
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <Button
+                variant="ghost"
+                className="justify-start text-red-600 hover:bg-red-50"
+                onClick={() => stageMutation.mutate({ stage: 'cancelled', scope: 'this' })}
+                disabled={stageMutation.isPending}
+              >
+                {stageMutation.isPending ? 'Saving…' : 'Only this job'}
+              </Button>
+              <Button
+                variant="ghost"
+                className="justify-start text-red-600 hover:bg-red-50"
+                onClick={() => stageMutation.mutate({ stage: 'cancelled', scope: 'this_and_future' })}
+                disabled={stageMutation.isPending}
+              >
+                {stageMutation.isPending ? 'Saving…' : 'This and all future jobs'}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => setShowCancelScopeDialog(false)}
+                disabled={stageMutation.isPending}
+              >
+                Back
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Delete dialog */}

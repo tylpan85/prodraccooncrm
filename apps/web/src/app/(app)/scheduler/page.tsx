@@ -126,6 +126,24 @@ function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+const STAGE_STYLES: Record<string, { bg: string; text: string; label: string }> = {
+  scheduled:         { bg: 'bg-slate-200',   text: 'text-slate-700', label: 'Scheduled' },
+  confirmation_sent: { bg: 'bg-blue-100',    text: 'text-blue-700',  label: 'Conf. Sent' },
+  confirmed:         { bg: 'bg-green-100',   text: 'text-green-700', label: 'Confirmed' },
+  job_done:          { bg: 'bg-emerald-600', text: 'text-white',     label: 'Done' },
+  cancelled:         { bg: 'bg-red-100',     text: 'text-red-700',   label: 'Cancelled' },
+};
+
+function StageBadge({ stage, size = 'sm' }: { stage: string; size?: 'xs' | 'sm' }) {
+  const s = STAGE_STYLES[stage] ?? { bg: 'bg-slate-200', text: 'text-slate-700', label: 'Scheduled' };
+  const cls = size === 'xs'
+    ? 'rounded px-1 py-px text-[9px] font-semibold'
+    : 'rounded px-1.5 py-px text-[10px] font-semibold';
+  return (
+    <span className={`${cls} ${s.bg} ${s.text}`}>{s.label}</span>
+  );
+}
+
 interface ColumnInfo {
   col: number;
   totalCols: number;
@@ -1262,6 +1280,11 @@ function DayView({
                         ))}
                       </div>
                     )}
+                    {job.jobStage && job.jobStage !== 'scheduled' && (
+                      <div className="mt-0.5">
+                        <StageBadge stage={job.jobStage} size="xs" />
+                      </div>
+                    )}
                   </button>
                 );
               })}
@@ -1468,6 +1491,11 @@ function MonthView({
                         ))}
                       </span>
                     )}
+                    {j.jobStage && j.jobStage !== 'scheduled' && (
+                      <span className="mt-0.5 block">
+                        <StageBadge stage={j.jobStage} size="xs" />
+                      </span>
+                    )}
                   </button>
                 ))}
                 {visibleEvents.map((ev) => (
@@ -1525,9 +1553,18 @@ function SlideOver({ onClose, children }: { onClose: () => void; children: React
 // Job slide-over content
 // ---------------------------------------------------------------------------
 
+const SLIDE_STAGE_OPTIONS = [
+  { value: 'scheduled',         label: 'Scheduled',     bg: 'bg-slate-100',   text: 'text-slate-700' },
+  { value: 'confirmation_sent', label: 'Conf. Sent',    bg: 'bg-blue-100',    text: 'text-blue-700' },
+  { value: 'confirmed',         label: 'Confirmed',     bg: 'bg-green-100',   text: 'text-green-700' },
+  { value: 'job_done',          label: 'Done',          bg: 'bg-emerald-600', text: 'text-white' },
+  { value: 'cancelled',         label: 'Cancelled',     bg: 'bg-red-100',     text: 'text-red-700' },
+] as const;
+
 function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }) {
   const queryClient = useQueryClient();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showCancelScopeDialog, setShowCancelScopeDialog] = useState(false);
   const jobQuery = useQuery({
     queryKey: ['job', jobId],
     queryFn: () => jobsApi.get(jobId),
@@ -1559,6 +1596,12 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
       invalidate();
       onClose();
     },
+  });
+
+  const stageMutation = useMutation({
+    mutationFn: (vars: { stage: string; scope?: 'this' | 'this_and_future' }) =>
+      jobsApi.setStage(jobId, vars),
+    onSuccess: () => invalidate(),
   });
 
   if (jobQuery.isLoading) {
@@ -1635,6 +1678,33 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
         <p className="mt-4 whitespace-pre-wrap text-sm text-slate-600">{job.privateNotes}</p>
       )}
 
+      <div className="mt-4">
+        <p className="mb-1.5 text-xs font-medium text-slate-500">Stage</p>
+        <div className="flex flex-wrap gap-1.5">
+          {SLIDE_STAGE_OPTIONS.map((opt) => {
+            const isActive = job.jobStage === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                disabled={stageMutation.isPending}
+                className={`rounded px-2.5 py-1 text-xs font-semibold transition-all ${opt.bg} ${opt.text} ${isActive ? 'ring-2 ring-offset-1 ring-slate-400' : 'opacity-70 hover:opacity-100'}`}
+                onClick={() => {
+                  if (isActive) return;
+                  if (opt.value === 'cancelled' && job.recurringSeriesId) {
+                    setShowCancelScopeDialog(true);
+                  } else {
+                    stageMutation.mutate({ stage: opt.value });
+                  }
+                }}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="mt-6 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
         <Link href={`/jobs/${job.id}/edit` as Route}>
           <Button variant="secondary" size="sm">
@@ -1675,6 +1745,46 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
           Delete
         </Button>
       </div>
+
+      {showCancelScopeDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">Cancel recurring job</h3>
+            <p className="mt-2 text-sm text-slate-600">
+              This job is part of a recurring series. Cancel:
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <Button
+                variant="danger"
+                onClick={() => {
+                  stageMutation.mutate({ stage: 'cancelled', scope: 'this' });
+                  setShowCancelScopeDialog(false);
+                }}
+                disabled={stageMutation.isPending}
+              >
+                {stageMutation.isPending ? 'Saving…' : 'Only this job'}
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  stageMutation.mutate({ stage: 'cancelled', scope: 'this_and_future' });
+                  setShowCancelScopeDialog(false);
+                }}
+                disabled={stageMutation.isPending}
+              >
+                {stageMutation.isPending ? 'Saving…' : 'This and all future jobs'}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => setShowCancelScopeDialog(false)}
+                disabled={stageMutation.isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showDeleteDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
