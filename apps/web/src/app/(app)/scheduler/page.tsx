@@ -6,6 +6,7 @@ import type { Route } from 'next';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Repeat2 } from 'lucide-react';
 import { Button } from '../../../components/ui/button';
 import { cn } from '../../../lib/cn';
 import { eventsApi } from '../../../lib/events-api';
@@ -125,6 +126,96 @@ function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+interface ColumnInfo {
+  col: number;
+  totalCols: number;
+}
+
+function computeColumns(jobs: Array<{ id: string; scheduledStartAt: string; scheduledEndAt: string }>): Map<string, ColumnInfo> {
+  if (jobs.length === 0) return new Map();
+
+  const sorted = [...jobs].sort(
+    (a, b) => new Date(a.scheduledStartAt).getTime() - new Date(b.scheduledStartAt).getTime(),
+  );
+
+  const colEnds: number[] = [];
+  const jobColMap = new Map<string, number>();
+
+  for (const job of sorted) {
+    const start = new Date(job.scheduledStartAt).getTime();
+    const end = new Date(job.scheduledEndAt).getTime();
+    let assigned = -1;
+    for (let c = 0; c < colEnds.length; c++) {
+      if ((colEnds[c] ?? Infinity) <= start) {
+        colEnds[c] = end;
+        assigned = c;
+        break;
+      }
+    }
+    if (assigned === -1) {
+      assigned = colEnds.length;
+      colEnds.push(end);
+    }
+    jobColMap.set(job.id, assigned);
+  }
+
+  const result = new Map<string, ColumnInfo>();
+  for (const job of jobs) {
+    const start = new Date(job.scheduledStartAt).getTime();
+    const end = new Date(job.scheduledEndAt).getTime();
+    let maxCol = jobColMap.get(job.id) ?? 0;
+    for (const other of jobs) {
+      if (other.id === job.id) continue;
+      const os = new Date(other.scheduledStartAt).getTime();
+      const oe = new Date(other.scheduledEndAt).getTime();
+      if (os < end && oe > start) {
+        maxCol = Math.max(maxCol, jobColMap.get(other.id) ?? 0);
+      }
+    }
+    result.set(job.id, { col: jobColMap.get(job.id) ?? 0, totalCols: maxCol + 1 });
+  }
+
+  return result;
+}
+
+function formatRecurrence(info: {
+  frequency: string;
+  interval: number;
+  daysOfWeek: string[];
+  dayOfMonth: number | null;
+  ordinal: string | null;
+}): string {
+  const DAY: Record<string, string> = {
+    SUN: 'Sunday', MON: 'Monday', TUE: 'Tuesday', WED: 'Wednesday',
+    THU: 'Thursday', FRI: 'Friday', SAT: 'Saturday',
+  };
+  const ORD: Record<string, string> = {
+    first: '1st', second: '2nd', third: '3rd', fourth: '4th', fifth: '5th', last: 'last',
+  };
+  const { frequency, interval, daysOfWeek, dayOfMonth, ordinal } = info;
+  const days = daysOfWeek.map((d) => DAY[d] ?? d).join(', ');
+
+  if (frequency === 'daily') {
+    return interval === 1 ? 'Every day' : `Every ${interval} days`;
+  }
+  if (frequency === 'weekly') {
+    const suffix = days ? ` on ${days}` : '';
+    if (interval === 1) return `Every week${suffix}`;
+    if (interval === 2) return `Biweekly${suffix}`;
+    return `Every ${interval} weeks${suffix}`;
+  }
+  if (frequency === 'monthly') {
+    const prefix = interval === 1 ? 'Every month' : `Every ${interval} months`;
+    if (ordinal && daysOfWeek.length > 0) return `${prefix} on ${ORD[ordinal] ?? ordinal} ${DAY[daysOfWeek[0]!] ?? daysOfWeek[0]}`;
+    if (dayOfMonth) return `${prefix} on day ${dayOfMonth}`;
+    return prefix;
+  }
+  if (frequency === 'yearly') {
+    return interval === 1 ? 'Every year' : `Every ${interval} years`;
+  }
+  return 'Recurring';
+}
+
 function hourToDatetimeLocal(date: string, hour: number): string {
   const h = String(Math.floor(hour)).padStart(2, '0');
   const m = String(Math.round((hour % 1) * 60)).padStart(2, '0');
@@ -140,6 +231,34 @@ const MIN_HOUR = 6;
 const MAX_HOUR = 23;
 const DEFAULT_START_HOUR = 7;
 const MIN_BLOCK_DURATION = 0.5; // 30 min minimum display
+
+// ---------------------------------------------------------------------------
+// Calendar display preferences
+// ---------------------------------------------------------------------------
+
+type CalendarPrefs = {
+  showJobNumber: boolean;
+  showCustomerName: boolean;
+  showService: boolean;
+  showAddress: boolean;
+  showTime: boolean;
+  showPrice: boolean;
+  showTags: boolean;
+  showRecurringText: boolean;
+};
+
+const DEFAULT_PREFS: CalendarPrefs = {
+  showJobNumber: true,
+  showCustomerName: true,
+  showService: false,
+  showAddress: false,
+  showTime: true,
+  showPrice: true,
+  showTags: true,
+  showRecurringText: true,
+};
+
+const PREFS_STORAGE_KEY = 'raccoon_calendar_prefs';
 
 // ---------------------------------------------------------------------------
 // Main page
@@ -221,6 +340,25 @@ export default function SchedulerPage() {
     { type: 'job'; id: string } | { type: 'event'; id: string } | null
   >(null);
 
+  // Calendar display prefs (persisted to localStorage)
+  const [calendarPrefs, setCalendarPrefs] = useState<CalendarPrefs>(() => {
+    if (typeof window === 'undefined') return DEFAULT_PREFS;
+    try {
+      const saved = localStorage.getItem(PREFS_STORAGE_KEY);
+      return saved ? { ...DEFAULT_PREFS, ...JSON.parse(saved) } : DEFAULT_PREFS;
+    } catch {
+      return DEFAULT_PREFS;
+    }
+  });
+
+  const updatePref = useCallback((key: keyof CalendarPrefs, value: boolean) => {
+    setCalendarPrefs((prev) => {
+      const next = { ...prev, [key]: value };
+      localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
   // Keyboard shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -288,6 +426,8 @@ export default function SchedulerPage() {
         onNext={goNext}
         onViewChange={setView}
         onDateChange={setDate}
+        calendarPrefs={calendarPrefs}
+        onPrefChange={updatePref}
       />
 
       {/* ── Body ──────────────────────────────────────────────────── */}
@@ -313,6 +453,7 @@ export default function SchedulerPage() {
               date={date}
               activeTeamIds={activeTeamIds}
               showUnassigned={showUnassigned}
+              calendarPrefs={calendarPrefs}
               onJobClick={(id) => setSlideOver({ type: 'job', id })}
               onEventClick={(id) => setSlideOver({ type: 'event', id })}
               onEmptySlotClick={(d, startHour, assigneeTeamMemberId) => {
@@ -326,6 +467,7 @@ export default function SchedulerPage() {
           ) : (
             <MonthView
               date={date}
+              calendarPrefs={calendarPrefs}
               onDayClick={(d) => navigate({ view: 'day', date: d })}
               onJobClick={(id) => setSlideOver({ type: 'job', id })}
               onEventClick={(id) => setSlideOver({ type: 'event', id })}
@@ -361,6 +503,8 @@ function SchedulerTopbar({
   onNext,
   onViewChange,
   onDateChange,
+  calendarPrefs,
+  onPrefChange,
 }: {
   view: 'day' | 'month';
   date: string;
@@ -369,8 +513,23 @@ function SchedulerTopbar({
   onNext: () => void;
   onViewChange: (v: 'day' | 'month') => void;
   onDateChange: (d: string) => void;
+  calendarPrefs: CalendarPrefs;
+  onPrefChange: (key: keyof CalendarPrefs, value: boolean) => void;
 }) {
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showPrefsPanel, setShowPrefsPanel] = useState(false);
+  const prefsPanelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showPrefsPanel) return;
+    function onClick(e: MouseEvent) {
+      if (prefsPanelRef.current && !prefsPanelRef.current.contains(e.target as Node)) {
+        setShowPrefsPanel(false);
+      }
+    }
+    document.addEventListener('mousedown', onClick);
+    return () => document.removeEventListener('mousedown', onClick);
+  }, [showPrefsPanel]);
 
   return (
     <div className="flex items-center justify-between border-b border-slate-200 bg-white px-4 py-2">
@@ -440,15 +599,51 @@ function SchedulerTopbar({
             Month
           </button>
         </div>
-        <Link href={'/settings/team' as Route}>
+        <div ref={prefsPanelRef} className="relative">
           <button
             type="button"
-            className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
-            aria-label="Settings"
+            className={cn(
+              'rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700',
+              showPrefsPanel && 'bg-slate-100 text-slate-700',
+            )}
+            aria-label="Calendar settings"
+            onClick={() => setShowPrefsPanel((v) => !v)}
           >
             <CogIcon />
           </button>
-        </Link>
+          {showPrefsPanel && (
+            <div className="absolute right-0 top-full z-30 mt-1 w-52 rounded-lg border border-slate-200 bg-white p-3 shadow-lg">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Show in calendar
+              </p>
+              {(
+                [
+                  ['showJobNumber', 'Job number'],
+                  ['showCustomerName', 'Customer name'],
+                  ['showService', 'Service'],
+                  ['showAddress', 'Address'],
+                  ['showTime', 'Start / end time'],
+                  ['showPrice', 'Price'],
+                  ['showTags', 'Tags'],
+                  ['showRecurringText', 'Recurring schedule'],
+                ] as [keyof CalendarPrefs, string][]
+              ).map(([key, label]) => (
+                <label
+                  key={key}
+                  className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 accent-brand-600"
+                    checked={calendarPrefs[key]}
+                    onChange={(e) => onPrefChange(key, e.target.checked)}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -657,6 +852,7 @@ function DayView({
   date,
   activeTeamIds,
   showUnassigned,
+  calendarPrefs,
   onJobClick,
   onEventClick,
   onEmptySlotClick,
@@ -664,6 +860,7 @@ function DayView({
   date: string;
   activeTeamIds: Set<string> | null;
   showUnassigned: boolean;
+  calendarPrefs: CalendarPrefs;
   onJobClick: (id: string) => void;
   onEventClick: (id: string) => void;
   onEmptySlotClick: (date: string, startHour: number, assigneeTeamMemberId: string | null) => void;
@@ -898,6 +1095,7 @@ function DayView({
         {visibleLanes.map((lane) => {
           const laneKey = lane.teamMemberId ?? '__unassigned';
           const isHovered = hoverLaneKey === laneKey;
+          const columnMap = computeColumns(lane.jobs);
           return (
           <div
             key={laneKey}
@@ -975,6 +1173,9 @@ function DayView({
                 const top = (start - MIN_HOUR) * HOUR_HEIGHT;
                 const height = duration * HOUR_HEIGHT;
                 const isDragging = draggingJobId === job.id;
+                const { col, totalCols } = columnMap.get(job.id) ?? { col: 0, totalCols: 1 };
+                const colWidthPct = 100 / totalCols;
+                const leftPct = col * colWidthPct;
 
                 return (
                   <button
@@ -999,23 +1200,67 @@ function DayView({
                       setDragPreview(null);
                     }}
                     className={cn(
-                      'absolute left-1 right-1 cursor-grab overflow-hidden rounded px-2 py-1 text-left text-xs shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing',
+                      'absolute cursor-grab overflow-hidden rounded px-2 py-1 text-left text-xs shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing border',
                       job.jobStatus === 'finished'
-                        ? 'bg-slate-100 text-slate-600'
-                        : 'bg-blue-50 text-blue-900 border border-blue-200',
+                        ? 'bg-slate-100 text-slate-600 border-slate-200'
+                        : '',
                       isDragging && 'opacity-50',
                     )}
-                    style={{ top, height: Math.max(height, 28), zIndex: 5 }}
+                    style={{
+                      top,
+                      height: Math.max(height, 28),
+                      left: `calc(${leftPct}% + 2px)`,
+                      width: `calc(${colWidthPct}% - 4px)`,
+                      zIndex: 5,
+                      ...(job.jobStatus !== 'finished' && {
+                        backgroundColor: lane.color + '22',
+                        borderColor: lane.color + '88',
+                        color: lane.color,
+                      }),
+                    }}
                     onClick={() => onJobClick(job.id)}
                   >
-                    <div className="truncate font-medium">{job.customerDisplayName}</div>
-                    {height > 36 && (
+                    {calendarPrefs.showCustomerName && (
+                      <div className="flex items-center gap-0.5 font-medium min-w-0">
+                        <span className="truncate">{job.customerDisplayName}</span>
+                        {job.recurringSeriesId && <Repeat2 size={10} className="shrink-0 opacity-60" />}
+                      </div>
+                    )}
+                    {job.recurringSeriesId && calendarPrefs.showRecurringText && job.recurrenceInfo && (
+                      <div className="truncate text-[10px] opacity-65">
+                        {formatRecurrence(job.recurrenceInfo)}
+                      </div>
+                    )}
+                    {calendarPrefs.showService && job.serviceName && (
+                      <div className="truncate text-[11px] opacity-75">{job.serviceName}</div>
+                    )}
+                    {calendarPrefs.showTime && (
+                      <div className="truncate text-[11px] opacity-75">
+                        {formatTime(job.scheduledStartAt)} – {formatTime(job.scheduledEndAt)}
+                      </div>
+                    )}
+                    {calendarPrefs.showAddress && job.customerAddress && (
+                      <div className="truncate text-[11px] opacity-70">{job.customerAddress}</div>
+                    )}
+                    {calendarPrefs.showJobNumber && height > 36 && (
                       <div className="truncate text-[11px] opacity-75">
                         {job.titleOrSummary ?? job.jobNumber}
                       </div>
                     )}
-                    {height > 52 && job.priceCents > 0 && (
+                    {calendarPrefs.showPrice && job.priceCents > 0 && (
                       <div className="text-[11px] opacity-60">{formatCents(job.priceCents)}</div>
+                    )}
+                    {calendarPrefs.showTags && job.tags.length > 0 && (
+                      <div className="flex flex-wrap gap-0.5 mt-0.5">
+                        {job.tags.map((tag) => (
+                          <span
+                            key={tag}
+                            className="rounded-full border border-current px-1 py-px text-[9px] font-medium opacity-70"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
                     )}
                   </button>
                 );
@@ -1105,11 +1350,13 @@ function DayView({
 
 function MonthView({
   date,
+  calendarPrefs,
   onDayClick,
   onJobClick,
   onEventClick,
 }: {
   date: string;
+  calendarPrefs: CalendarPrefs;
   onDayClick: (d: string) => void;
   onJobClick: (id: string) => void;
   onEventClick: (id: string) => void;
@@ -1178,15 +1425,49 @@ function MonthView({
                   <button
                     key={j.id}
                     type="button"
-                    className="truncate rounded px-1.5 py-0.5 text-left text-[11px] font-medium text-white"
+                    className="rounded px-1.5 py-0.5 text-left text-[11px] font-medium text-white"
                     style={{ backgroundColor: j.assigneeColor }}
                     onClick={(e) => {
                       e.stopPropagation();
                       onJobClick(j.id);
                     }}
                   >
-                    {j.customerDisplayName}
-                    {j.titleOrSummary ? ` · ${j.titleOrSummary}` : ''}
+                    <span className="flex items-center gap-0.5 min-w-0">
+                      {calendarPrefs.showTime && (
+                        <span className="shrink-0 opacity-90">
+                          {formatTime(j.scheduledStartAt).replace(':00', '').replace(' ', '')}
+                        </span>
+                      )}
+                      {calendarPrefs.showCustomerName && (
+                        <span className="flex items-center gap-0.5 truncate min-w-0">
+                          <span className="truncate">{j.customerDisplayName}{j.titleOrSummary ? ` · ${j.titleOrSummary}` : ''}</span>
+                          {j.recurringSeriesId && <Repeat2 size={8} className="shrink-0 opacity-75" />}
+                        </span>
+                      )}
+                      {calendarPrefs.showPrice && j.priceCents > 0 && (
+                        <span className="shrink-0 opacity-90">{formatCents(j.priceCents)}</span>
+                      )}
+                    </span>
+                    {j.recurringSeriesId && calendarPrefs.showRecurringText && j.recurrenceInfo && (
+                      <span className="block truncate text-[9px] opacity-65">
+                        {formatRecurrence(j.recurrenceInfo)}
+                      </span>
+                    )}
+                    {calendarPrefs.showService && j.serviceName && (
+                      <span className="block truncate text-[10px] opacity-85">{j.serviceName}</span>
+                    )}
+                    {calendarPrefs.showAddress && j.customerAddress && (
+                      <span className="block truncate text-[10px] opacity-85">{j.customerAddress}</span>
+                    )}
+                    {calendarPrefs.showTags && j.tags.length > 0 && (
+                      <span className="flex flex-wrap gap-0.5 mt-0.5">
+                        {j.tags.slice(0, 2).map((tag) => (
+                          <span key={tag} className="rounded-full border border-white/50 px-1 text-[9px] opacity-90">
+                            {tag}
+                          </span>
+                        ))}
+                      </span>
+                    )}
                   </button>
                 ))}
                 {visibleEvents.map((ev) => (

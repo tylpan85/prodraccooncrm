@@ -17,18 +17,30 @@ interface LaneDto {
   events: EventBlock[];
 }
 
+interface RecurrenceInfo {
+  frequency: string;
+  interval: number;
+  daysOfWeek: string[];
+  dayOfMonth: number | null;
+  ordinal: string | null;
+}
+
 interface JobBlock {
   id: string;
   jobNumber: string;
   customerId: string;
   customerDisplayName: string;
+  customerAddress: string | null;
   titleOrSummary: string | null;
+  serviceName: string | null;
   priceCents: number;
   scheduledStartAt: string;
   scheduledEndAt: string;
   jobStatus: string;
   assigneeTeamMemberId: string | null;
   recurringSeriesId: string | null;
+  recurrenceInfo: RecurrenceInfo | null;
+  tags: string[];
 }
 
 interface EventBlock {
@@ -75,6 +87,18 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
       },
       include: {
         customer: { select: { displayName: true } },
+        customerAddress: { select: { street: true, city: true } },
+        tags: { select: { tag: true } },
+        service: { select: { name: true } },
+        recurringSeries: {
+          select: {
+            recurrenceFrequency: true,
+            recurrenceInterval: true,
+            recurrenceDayOfWeek: true,
+            recurrenceDayOfMonth: true,
+            recurrenceOrdinal: true,
+          },
+        },
       },
       orderBy: { scheduledStartAt: 'asc' },
     });
@@ -125,13 +149,27 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         jobNumber: j.jobNumber,
         customerId: j.customerId,
         customerDisplayName: j.customer.displayName,
+        customerAddress: j.customerAddress
+          ? [j.customerAddress.street, j.customerAddress.city].filter(Boolean).join(', ') || null
+          : null,
         titleOrSummary: j.titleOrSummary,
+        serviceName: j.service?.name ?? null,
         priceCents: j.priceCents,
         scheduledStartAt: j.scheduledStartAt!.toISOString(),
         scheduledEndAt: j.scheduledEndAt!.toISOString(),
         jobStatus: j.jobStatus,
         assigneeTeamMemberId: j.assigneeTeamMemberId,
         recurringSeriesId: j.recurringSeriesId,
+        recurrenceInfo: j.recurringSeries
+          ? {
+              frequency: j.recurringSeries.recurrenceFrequency,
+              interval: j.recurringSeries.recurrenceInterval,
+              daysOfWeek: j.recurringSeries.recurrenceDayOfWeek,
+              dayOfMonth: j.recurringSeries.recurrenceDayOfMonth,
+              ordinal: j.recurringSeries.recurrenceOrdinal,
+            }
+          : null,
+        tags: j.tags.map((t) => t.tag),
       });
     }
 
@@ -196,7 +234,21 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         scheduledEndAt: { gte: rangeStart },
         deletedFromSeriesAt: null,
       },
-      include: { customer: { select: { displayName: true } } },
+      include: {
+        customer: { select: { displayName: true } },
+        customerAddress: { select: { street: true, city: true } },
+        tags: { select: { tag: true } },
+        service: { select: { name: true } },
+        recurringSeries: {
+          select: {
+            recurrenceFrequency: true,
+            recurrenceInterval: true,
+            recurrenceDayOfWeek: true,
+            recurrenceDayOfMonth: true,
+            recurrenceOrdinal: true,
+          },
+        },
+      },
       orderBy: { scheduledStartAt: 'asc' },
     });
 
@@ -233,13 +285,27 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         jobNumber: j.jobNumber,
         customerId: j.customerId,
         customerDisplayName: j.customer.displayName,
+        customerAddress: j.customerAddress
+          ? [j.customerAddress.street, j.customerAddress.city].filter(Boolean).join(', ') || null
+          : null,
         titleOrSummary: j.titleOrSummary,
+        serviceName: j.service?.name ?? null,
         priceCents: j.priceCents,
         scheduledStartAt: j.scheduledStartAt!.toISOString(),
         scheduledEndAt: j.scheduledEndAt!.toISOString(),
         jobStatus: j.jobStatus,
         assigneeTeamMemberId: j.assigneeTeamMemberId,
         recurringSeriesId: j.recurringSeriesId,
+        recurrenceInfo: j.recurringSeries
+          ? {
+              frequency: j.recurringSeries.recurrenceFrequency,
+              interval: j.recurringSeries.recurrenceInterval,
+              daysOfWeek: j.recurringSeries.recurrenceDayOfWeek,
+              dayOfMonth: j.recurringSeries.recurrenceDayOfMonth,
+              ordinal: j.recurringSeries.recurrenceOrdinal,
+            }
+          : null,
+        tags: j.tags.map((t) => t.tag),
         assigneeColor: tm?.color ?? '#6b7280',
       });
     }

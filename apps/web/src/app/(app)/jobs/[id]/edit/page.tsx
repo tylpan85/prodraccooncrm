@@ -195,7 +195,7 @@ export default function EditJobPage() {
     },
     onSuccess: () => {
       invalidateAll();
-      router.push(`/jobs/${id}` as Route);
+      router.push('/scheduler' as Route);
     },
     onError: (err) => {
       setError(err instanceof ApiClientError ? err.message : 'Failed to update');
@@ -219,7 +219,7 @@ export default function EditJobPage() {
     },
     onSuccess: () => {
       invalidateAll();
-      router.push(`/jobs/${id}` as Route);
+      router.push('/scheduler' as Route);
     },
     onError: (err) => {
       setError(err instanceof ApiClientError ? err.message : 'Failed to update');

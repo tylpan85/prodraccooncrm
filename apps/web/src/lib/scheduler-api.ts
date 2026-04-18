@@ -1,17 +1,29 @@
 import { apiFetch } from './api-client';
 
+export interface RecurrenceInfo {
+  frequency: string;
+  interval: number;
+  daysOfWeek: string[];
+  dayOfMonth: number | null;
+  ordinal: string | null;
+}
+
 export interface JobBlock {
   id: string;
   jobNumber: string;
   customerId: string;
   customerDisplayName: string;
+  customerAddress: string | null;
   titleOrSummary: string | null;
+  serviceName: string | null;
   priceCents: number;
   scheduledStartAt: string;
   scheduledEndAt: string;
   jobStatus: string;
   assigneeTeamMemberId: string | null;
   recurringSeriesId: string | null;
+  recurrenceInfo: RecurrenceInfo | null;
+  tags: string[];
 }
 
 export interface EventBlock {
