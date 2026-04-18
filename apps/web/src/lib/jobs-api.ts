@@ -3,6 +3,7 @@ import type {
   CreateJobRequest,
   JobDto,
   JobSummaryDto,
+  OccurrenceDeleteRequest,
   OccurrenceEditRequest,
   ScheduleJobRequest,
   UpdateJobRequest,
@@ -56,6 +57,13 @@ export const jobsApi = {
       method: 'POST',
       body,
     }),
+  occurrenceDelete: (id: string, body: OccurrenceDeleteRequest) =>
+    apiFetch<{ item: { id: string; scope: string; deletedCount: number } }>(
+      `/api/jobs/${id}/occurrence-delete`,
+      { method: 'POST', body },
+    ),
+  delete: (id: string) =>
+    apiFetch<void>(`/api/jobs/${id}`, { method: 'DELETE' }),
   listForCustomer: (customerId: string) =>
     apiItems<JobSummaryDto>(`/api/customers/${customerId}/jobs`),
 };

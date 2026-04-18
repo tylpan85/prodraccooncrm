@@ -10,14 +10,17 @@ import { Input } from '../../../components/ui/input';
 import { TableSkeleton } from '../../../components/ui/skeleton';
 import { customersApi } from '../../../lib/customers-api';
 
+type Tab = 'active' | 'archived';
+
 export default function CustomersPage() {
+  const [tab, setTab] = useState<Tab>('active');
   const [search, setSearch] = useState('');
   const [appliedQuery, setAppliedQuery] = useState('');
   const [cursor, setCursor] = useState<string | null>(null);
 
   const customersQuery = useQuery({
-    queryKey: ['customers', appliedQuery, cursor],
-    queryFn: () => customersApi.list({ q: appliedQuery, cursor, limit: 25 }),
+    queryKey: ['customers', tab, appliedQuery, cursor],
+    queryFn: () => customersApi.list({ q: appliedQuery, cursor, limit: 25, archived: tab === 'archived' }),
   });
 
   const items: CustomerSummaryDto[] = customersQuery.data?.items ?? [];
@@ -33,6 +36,23 @@ export default function CustomersPage() {
         <Link href={'/customers/new' as Route}>
           <Button>New customer</Button>
         </Link>
+      </div>
+
+      <div className="mt-6 flex gap-4 border-b border-slate-200">
+        {(['active', 'archived'] as Tab[]).map((t) => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => { setTab(t); setAppliedQuery(''); setSearch(''); setCursor(null); }}
+            className={`-mb-px border-b-2 pb-3 text-sm font-medium capitalize ${
+              tab === t
+                ? 'border-brand-600 text-brand-700'
+                : 'border-transparent text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            {t}
+          </button>
+        ))}
       </div>
 
       <form
@@ -83,12 +103,13 @@ export default function CustomersPage() {
                 <th className="px-4 py-3 font-medium">City</th>
                 <th className="px-4 py-3 font-medium text-right">Jobs</th>
                 <th className="px-4 py-3 font-medium text-right">Open inv</th>
+                <th className="px-4 py-3 font-medium" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
               {items.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-6 text-sm text-slate-500">
+                  <td colSpan={8} className="px-4 py-6 text-sm text-slate-500">
                     {appliedQuery
                       ? 'No customers match that search.'
                       : 'No customers yet — create your first one.'}
@@ -114,6 +135,14 @@ export default function CustomersPage() {
                   <td className="px-4 py-3 text-right text-sm text-slate-700">{c.jobsCount}</td>
                   <td className="px-4 py-3 text-right text-sm text-slate-700">
                     {c.openInvoicesCount}
+                  </td>
+                  <td className="px-4 py-3 text-right text-sm">
+                    <Link
+                      href={`/customers/${c.id}/edit` as Route}
+                      className="text-brand-700 hover:underline"
+                    >
+                      Edit
+                    </Link>
                   </td>
                 </tr>
               ))}

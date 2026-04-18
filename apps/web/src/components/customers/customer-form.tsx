@@ -11,7 +11,9 @@ import {
   type PhoneInput,
   US_STATES,
 } from '@openclaw/shared';
+import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { settingsApi } from '../../lib/settings-api';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
@@ -83,7 +85,7 @@ export const emptyCustomerForm: CustomerFormState = {
   billingAddress: '',
   primaryAddress: newAddress(),
   additionalAddresses: [],
-  phones: [],
+  phones: [{ _key: nextKey('phone'), value: '', type: 'mobile' as PhoneInput['type'], note: '' }],
   emails: [],
   tags: [],
 };
@@ -231,6 +233,11 @@ export function CustomerForm({
   const phoneRef = useRef<HTMLInputElement | null>(null);
   const emailRef = useRef<HTMLInputElement | null>(null);
 
+  const leadSourcesQuery = useQuery({
+    queryKey: ['lead-sources'],
+    queryFn: () => settingsApi.listLeadSources(false).then((r) => r.items),
+  });
+
   useEffect(() => {
     setForm(initialValue);
   }, [initialValue]);
@@ -255,12 +262,17 @@ export function CustomerForm({
     [form.firstName, form.lastName, form.companyName],
   );
 
+  const phoneValid = useMemo(
+    () => form.phones.some((p) => p.value.trim().length > 0),
+    [form.phones],
+  );
+
   return (
     <form
       className="mx-auto max-w-3xl space-y-6 px-6 py-8"
       onSubmit={(e) => {
         e.preventDefault();
-        if (!identityValid) return;
+        if (!identityValid || !phoneValid) return;
         void onSubmit(form);
       }}
     >
@@ -378,7 +390,7 @@ export function CustomerForm({
         )}
       </Section>
 
-      <Section title="Phones">
+      <Section title="Phones" required>
         <div className="space-y-2">
           {form.phones.map((p, idx) => (
             <div key={p._key} className="grid gap-2 sm:grid-cols-[1fr_140px_1fr_auto]">
@@ -455,6 +467,9 @@ export function CustomerForm({
           >
             Add phone
           </Button>
+          {!phoneValid && (
+            <p className="text-xs text-red-600">At least one phone number is required.</p>
+          )}
         </div>
       </Section>
 
@@ -599,9 +614,13 @@ export function CustomerForm({
       <Section title="Lead">
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Lead source">
-            <Input
+            <Select
               value={form.leadSource}
-              onChange={(e) => update((c) => ({ ...c, leadSource: e.target.value }))}
+              onChange={(value) => update((c) => ({ ...c, leadSource: value }))}
+              options={[
+                { value: '', label: '—' },
+                ...(leadSourcesQuery.data ?? []).map((s) => ({ value: s.name, label: s.name })),
+              ]}
               disabled={saving}
             />
           </Field>
@@ -619,7 +638,7 @@ export function CustomerForm({
         <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>
           Cancel
         </Button>
-        <Button type="submit" disabled={saving || !identityValid}>
+        <Button type="submit" disabled={saving || !identityValid || !phoneValid}>
           {saving ? 'Saving…' : submitLabel}
         </Button>
       </div>
@@ -627,10 +646,21 @@ export function CustomerForm({
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  required,
+  children,
+}: {
+  title: string;
+  required?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <section>
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">{title}</h2>
+      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+        {required && <span className="ml-1 text-red-500">*</span>}
+      </h2>
       {children}
     </section>
   );

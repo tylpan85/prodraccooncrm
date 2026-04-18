@@ -46,6 +46,7 @@ function customerDto(c: CustomerRecord) {
     customerType: c.customerType,
     subcontractor: c.subcontractor,
     doNotService: c.doNotService,
+    archived: c.archived,
     sendNotifications: c.sendNotifications,
     customerNotes: c.customerNotes,
     leadSource: c.leadSource,
@@ -244,9 +245,12 @@ export async function customersRoutes(fastify: FastifyInstance) {
 
   fastify.get('/api/customers', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
-    const { q, cursor, limit } = customerListQuerySchema.parse(req.query);
+    const { q, cursor, limit, includeArchived } = customerListQuerySchema.parse(req.query);
 
-    const where: Prisma.CustomerWhereInput = { organizationId: req.auth.orgId };
+    const where: Prisma.CustomerWhereInput = {
+      organizationId: req.auth.orgId,
+      archived: includeArchived ? true : false,
+    };
     if (q && q.length > 0) {
       const phoneDigits = digitsOnly(q);
       const orClauses: Prisma.CustomerWhereInput[] = [
@@ -283,6 +287,7 @@ export async function customersRoutes(fastify: FastifyInstance) {
       displayName: c.displayName,
       customerType: c.customerType,
       doNotService: c.doNotService,
+      archived: c.archived,
       primaryPhone: c.phones[0]?.value ?? null,
       primaryEmail: c.emails[0]?.value ?? null,
       city: c.addresses[0]?.city ?? null,
@@ -513,6 +518,50 @@ export async function customersRoutes(fastify: FastifyInstance) {
       action: 'update',
     });
 
+    return reply.send({ item: customerDto(updated) });
+  });
+
+  fastify.patch('/api/customers/:id/archive', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const existing = await prisma.customer.findFirst({
+      where: { id, organizationId: req.auth.orgId },
+    });
+    if (!existing) throw new ApiError(ERROR_CODES.CUSTOMER_NOT_FOUND, 404, 'Customer not found');
+    const updated = await prisma.customer.update({
+      where: { id },
+      data: { archived: true },
+      include: CUSTOMER_INCLUDE,
+    });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'customer',
+      entityId: id,
+      action: 'archive',
+    });
+    return reply.send({ item: customerDto(updated) });
+  });
+
+  fastify.patch('/api/customers/:id/unarchive', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const existing = await prisma.customer.findFirst({
+      where: { id, organizationId: req.auth.orgId },
+    });
+    if (!existing) throw new ApiError(ERROR_CODES.CUSTOMER_NOT_FOUND, 404, 'Customer not found');
+    const updated = await prisma.customer.update({
+      where: { id },
+      data: { archived: false },
+      include: CUSTOMER_INCLUDE,
+    });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'customer',
+      entityId: id,
+      action: 'unarchive',
+    });
     return reply.send({ item: customerDto(updated) });
   });
 

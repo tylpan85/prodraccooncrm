@@ -1,7 +1,7 @@
 'use client';
 
 import type { CustomerDto, InvoiceSummaryDto, JobSummaryDto } from '@openclaw/shared';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Route } from 'next';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
@@ -19,6 +19,7 @@ export default function CustomerDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params.id;
   const [tab, setTab] = useState<Tab>('overview');
+  const queryClient = useQueryClient();
 
   const customerQuery = useQuery({
     queryKey: ['customer', id],
@@ -30,6 +31,16 @@ export default function CustomerDetailPage() {
     queryKey: ['customerJobs', id],
     queryFn: () => jobsApi.listForCustomer(id),
     enabled: tab === 'jobs',
+  });
+
+  const archiveMutation = useMutation({
+    mutationFn: () => customersApi.archiveCustomer(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['customer', id] }),
+  });
+
+  const unarchiveMutation = useMutation({
+    mutationFn: () => customersApi.unarchiveCustomer(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['customer', id] }),
   });
 
   const customerInvoicesQuery = useQuery({
@@ -87,6 +98,11 @@ export default function CustomerDetailPage() {
                   Subcontractor
                 </span>
               )}
+              {c.archived && (
+                <span className="inline-flex items-center rounded bg-slate-200 px-2 py-0.5 text-xs font-medium text-slate-600">
+                  Archived
+                </span>
+              )}
               {c.doNotService && (
                 <span className="inline-flex items-center rounded bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800">
                   Do not service
@@ -101,6 +117,23 @@ export default function CustomerDetailPage() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          {c.archived ? (
+            <Button
+              variant="secondary"
+              disabled={unarchiveMutation.isPending}
+              onClick={() => unarchiveMutation.mutate()}
+            >
+              {unarchiveMutation.isPending ? 'Restoring…' : 'Restore'}
+            </Button>
+          ) : (
+            <Button
+              variant="danger"
+              disabled={archiveMutation.isPending}
+              onClick={() => archiveMutation.mutate()}
+            >
+              {archiveMutation.isPending ? 'Archiving…' : 'Archive'}
+            </Button>
+          )}
           <Link href={`/customers/${c.id}/edit` as Route}>
             <Button variant="secondary">Edit</Button>
           </Link>

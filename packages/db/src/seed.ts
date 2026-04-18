@@ -21,7 +21,7 @@ async function seed() {
       email: 'admin@raccooncrm.local',
       passwordHash,
       role: 'admin',
-      mustResetPassword: true,
+      mustResetPassword: false,
     },
   });
 

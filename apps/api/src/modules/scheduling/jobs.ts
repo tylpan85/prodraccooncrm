@@ -626,6 +626,25 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     return reply.send({ item: jobDto(result) });
   });
 
+  // ── Delete (non-recurring only) ──────────────────────────────────────
+  fastify.delete('/api/jobs/:id', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const orgId = req.auth.orgId;
+
+    const job = await prisma.job.findFirst({
+      where: { id, organizationId: orgId },
+      select: { id: true, recurringSeriesId: true },
+    });
+    if (!job) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
+    if (job.recurringSeriesId) {
+      throw new ApiError(ERROR_CODES.NOT_RECURRING, 400, 'Use occurrence-delete for recurring jobs');
+    }
+
+    await prisma.job.delete({ where: { id } });
+    return reply.status(204).send();
+  });
+
   // ── Customer jobs list (replaces the Phase 4 stub) ────────────────────
   fastify.get('/api/customers/:customerId/jobs', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');

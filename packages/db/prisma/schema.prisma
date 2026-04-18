@@ -110,6 +110,7 @@ model Organization {
   teamMembers     TeamMember[]
   customers       Customer[]
   services        Service[]
+  leadSources     LeadSource[]
   jobs            Job[]
   events          Event[]
   recurringSeries RecurringSeries[]
@@ -127,6 +128,7 @@ model User {
   passwordHash      String   @map("password_hash")
   role              String
   mustResetPassword Boolean  @default(false) @map("must_reset_password")
+  archived          Boolean  @default(false) @map("archived")
   createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt         DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -189,6 +191,7 @@ model Customer {
   subcontractor     Boolean      @default(false)
   doNotService      Boolean      @default(false) @map("do_not_service")
   sendNotifications Boolean      @default(true) @map("send_notifications")
+  archived          Boolean      @default(false) @map("archived")
   customerNotes     String?      @map("customer_notes")
   leadSource        String?      @map("lead_source")
   referredBy        String?      @map("referred_by")
@@ -206,6 +209,7 @@ model Customer {
 
   @@index([organizationId, displayName])
   @@index([organizationId, doNotService])
+  @@index([organizationId, archived])
   @@map("customers")
 }
 
@@ -283,6 +287,21 @@ model Service {
 
   @@index([organizationId, active])
   @@map("services")
+}
+
+model LeadSource {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  name           String
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+
+  @@unique([organizationId, name])
+  @@index([organizationId, active])
+  @@map("lead_sources")
 }
 
 // =========================================================================

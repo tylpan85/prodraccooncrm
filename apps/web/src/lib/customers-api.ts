@@ -11,6 +11,7 @@ export interface ListCustomersParams {
   q?: string;
   cursor?: string | null;
   limit?: number;
+  archived?: boolean;
 }
 
 function listQuery(params: ListCustomersParams): string {
@@ -18,6 +19,7 @@ function listQuery(params: ListCustomersParams): string {
   if (params.q && params.q.trim().length > 0) sp.set('q', params.q.trim());
   if (params.cursor) sp.set('cursor', params.cursor);
   if (params.limit) sp.set('limit', String(params.limit));
+  if (params.archived) sp.set('includeArchived', 'true');
   const s = sp.toString();
   return s.length > 0 ? `?${s}` : '';
 }
@@ -47,6 +49,10 @@ export const customersApi = {
     apiItem<CustomerDto>('/api/customers', { method: 'POST', body }),
   update: (id: string, body: UpdateCustomerRequest) =>
     apiItem<CustomerDto>(`/api/customers/${id}`, { method: 'PATCH', body }),
+  archiveCustomer: (id: string) =>
+    apiItem<CustomerDto>(`/api/customers/${id}/archive`, { method: 'PATCH', body: {} }),
+  unarchiveCustomer: (id: string) =>
+    apiItem<CustomerDto>(`/api/customers/${id}/unarchive`, { method: 'PATCH', body: {} }),
   searchDuplicates: (params: SearchDuplicatesParams) =>
     apiItems<DuplicateMatchDto>(`/api/customers/search-duplicates${dupQuery(params)}`),
   listJobs: (id: string) =>

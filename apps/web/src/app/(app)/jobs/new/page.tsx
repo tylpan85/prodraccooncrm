@@ -19,6 +19,9 @@ export default function NewJobPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const preselectedCustomerId = searchParams.get('customerId');
+  const preselectedStartAt = searchParams.get('scheduledStartAt') ?? '';
+  const preselectedEndAt = searchParams.get('scheduledEndAt') ?? '';
+  const preselectedAssigneeId = searchParams.get('assigneeTeamMemberId');
   const queryClient = useQueryClient();
 
   // ── Customer search ─────────────────────────────────────────────────
@@ -77,7 +80,6 @@ export default function NewJobPage() {
 
   // ── Form state ──────────────────────────────────────────────────────
   const [serviceId, setServiceId] = useState<string | null>(null);
-  const [titleOrSummary, setTitleOrSummary] = useState('');
   const [priceCents, setPriceCents] = useState(0);
   const [priceDisplay, setPriceDisplay] = useState('0.00');
   const [privateNotes, setPrivateNotes] = useState('');
@@ -85,9 +87,9 @@ export default function NewJobPage() {
   const [tagInput, setTagInput] = useState('');
 
   // Schedule — always visible, empty = unscheduled
-  const [startAt, setStartAt] = useState('');
-  const [endAt, setEndAt] = useState('');
-  const [assigneeId, setAssigneeId] = useState<string | null>(null);
+  const [startAt, setStartAt] = useState(preselectedStartAt);
+  const [endAt, setEndAt] = useState(preselectedEndAt);
+  const [assigneeId, setAssigneeId] = useState<string | null>(preselectedAssigneeId);
 
   // Recurrence
   const [recurrenceRule, setRecurrenceRule] = useState<RecurrenceRuleInput | null>(null);
@@ -103,15 +105,6 @@ export default function NewJobPage() {
 
   const [error, setError] = useState<string | null>(null);
 
-  // Auto-fill title from service
-  function onServiceChange(sid: string | null) {
-    setServiceId(sid);
-    if (sid) {
-      const svc = services.find((s) => s.id === sid);
-      if (svc && !titleOrSummary) setTitleOrSummary(svc.name);
-    }
-  }
-
   // ── Submit ──────────────────────────────────────────────────────────
   const createMutation = useMutation({
     mutationFn: async () => {
@@ -124,14 +117,14 @@ export default function NewJobPage() {
           job: {
             customerAddressId: addressId,
             serviceId: serviceId || null,
-            titleOrSummary: titleOrSummary.trim() || null,
+            titleOrSummary: null,
             priceCents,
             privateNotes: privateNotes.trim() || null,
             tags: tags.length > 0 ? tags : undefined,
           },
           schedule: {
-            scheduledStartAt: `${startAt}:00.000Z`,
-            scheduledEndAt: `${endAt}:00.000Z`,
+            scheduledStartAt: new Date(startAt).toISOString(),
+            scheduledEndAt: new Date(endAt).toISOString(),
             assigneeTeamMemberId: assigneeId || null,
           },
           recurrence: recurrenceRule,
@@ -141,12 +134,12 @@ export default function NewJobPage() {
       return jobsApi.create(customerId, {
         customerAddressId: addressId,
         serviceId: serviceId || null,
-        titleOrSummary: titleOrSummary.trim() || null,
+        titleOrSummary: null,
         priceCents,
         privateNotes: privateNotes.trim() || null,
         tags: tags.length > 0 ? tags : undefined,
-        scheduledStartAt: isScheduled ? `${startAt}:00.000Z` : null,
-        scheduledEndAt: isScheduled ? `${endAt}:00.000Z` : null,
+        scheduledStartAt: isScheduled ? new Date(startAt).toISOString() : null,
+        scheduledEndAt: isScheduled ? new Date(endAt).toISOString() : null,
         assigneeTeamMemberId: isScheduled && assigneeId ? assigneeId : null,
       });
     },
@@ -171,223 +164,139 @@ export default function NewJobPage() {
   const saving = createMutation.isPending;
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-8">
+    <div className="mx-auto max-w-5xl px-6 py-4">
       <h1 className="text-xl font-semibold text-slate-900">New job</h1>
 
       {error && (
-        <div className="mt-4 rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>
+        <div className="mt-2 rounded-md bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>
       )}
 
       <form
-        className="mt-6 space-y-6"
+        className="mt-4"
         onSubmit={(e) => {
           e.preventDefault();
           setError(null);
           createMutation.mutate();
         }}
       >
-        {/* ── Customer ──────────────────────────────────────────────── */}
-        <Section title="Customer">
-          {customerId ? (
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-slate-900">{customerDisplay}</span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setCustomerId(null);
-                  setCustomerDisplay('');
-                  setAddressId('');
-                }}
-              >
-                Change
-              </Button>
-            </div>
-          ) : (
-            <div className="relative">
-              <Input
-                value={customerSearch}
-                onChange={(e) => setCustomerSearch(e.target.value)}
-                placeholder="Search customer by name…"
-                disabled={saving}
-              />
-              {customerSearchQuery.data && customerSearchQuery.data.items.length > 0 && (
-                <div className="absolute z-10 mt-1 w-full rounded-md border border-slate-200 bg-white shadow-lg">
-                  {customerSearchQuery.data.items.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      className="block w-full px-3 py-2 text-left text-sm hover:bg-slate-50"
-                      onClick={() => {
-                        setCustomerId(c.id);
-                        setCustomerDisplay(c.displayName);
-                        setCustomerSearch('');
-                      }}
-                    >
-                      {c.displayName}
-                      {c.city && <span className="ml-2 text-xs text-slate-500">{c.city}</span>}
-                    </button>
-                  ))}
+        <div className="grid gap-x-8 gap-y-3 sm:grid-cols-2">
+          {/* ── Left column: job details ───────────────────────── */}
+          <div className="space-y-3">
+            {/* Customer */}
+            <div>
+              <Label>Customer</Label>
+              {customerId ? (
+                <div className="mt-1 flex items-center gap-2">
+                  <span className="text-sm font-medium text-slate-900">{customerDisplay}</span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setCustomerId(null);
+                      setCustomerDisplay('');
+                      setAddressId('');
+                    }}
+                  >
+                    Change
+                  </Button>
+                </div>
+              ) : (
+                <div className="relative mt-1">
+                  <Input
+                    value={customerSearch}
+                    onChange={(e) => setCustomerSearch(e.target.value)}
+                    placeholder="Search customer by name…"
+                    disabled={saving}
+                  />
+                  {customerSearchQuery.data && customerSearchQuery.data.items.length > 0 && (
+                    <div className="absolute z-10 mt-1 w-full rounded-md border border-slate-200 bg-white shadow-lg">
+                      {customerSearchQuery.data.items.map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          className="block w-full px-3 py-2 text-left text-sm hover:bg-slate-50"
+                          onClick={() => {
+                            setCustomerId(c.id);
+                            setCustomerDisplay(c.displayName);
+                            setCustomerSearch('');
+                          }}
+                        >
+                          {c.displayName}
+                          {c.city && <span className="ml-2 text-xs text-slate-500">{c.city}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          )}
-        </Section>
 
-        {/* ── Address ───────────────────────────────────────────────── */}
-        {customerId && customerData && (
-          <Section title="Address">
-            {customerData.addresses.length === 0 ? (
-              <p className="text-sm text-slate-500">No addresses on file for this customer.</p>
-            ) : (
-              <select
-                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                value={addressId}
-                onChange={(e) => setAddressId(e.target.value)}
-                disabled={saving}
-              >
-                <option value="">Select address…</option>
-                {customerData.addresses.map((a) => {
-                  const line = [a.street, a.unit, a.city, a.state, a.zip]
-                    .filter(Boolean)
-                    .join(', ');
-                  return (
-                    <option key={a.id} value={a.id}>
-                      {line || 'No details'}
-                    </option>
-                  );
-                })}
-              </select>
-            )}
-          </Section>
-        )}
-
-        {/* ── Service + Price ───────────────────────────────────────── */}
-        <Section title="Service & Price">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <Label>Service (optional)</Label>
-              <select
-                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                value={serviceId ?? ''}
-                onChange={(e) => onServiceChange(e.target.value || null)}
-                disabled={saving}
-              >
-                <option value="">None</option>
-                {services.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <Label>Price ($)</Label>
-              <Input
-                className="mt-1"
-                type="text"
-                inputMode="decimal"
-                value={priceDisplay}
-                onChange={(e) => {
-                  setPriceDisplay(e.target.value);
-                  const cents = Math.round(Number.parseFloat(e.target.value || '0') * 100);
-                  setPriceCents(Number.isNaN(cents) ? 0 : Math.max(0, cents));
-                }}
-                disabled={saving}
-              />
-            </div>
-          </div>
-        </Section>
-
-        {/* ── Title / Notes / Tags ──────────────────────────────────── */}
-        <Section title="Details">
-          <div className="space-y-4">
-            <div>
-              <Label>Title / Summary</Label>
-              <Input
-                className="mt-1"
-                value={titleOrSummary}
-                onChange={(e) => setTitleOrSummary(e.target.value)}
-                maxLength={255}
-                disabled={saving}
-              />
-            </div>
-            <div>
-              <Label>Private notes</Label>
-              <textarea
-                className="mt-1 min-h-20 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                value={privateNotes}
-                onChange={(e) => setPrivateNotes(e.target.value)}
-                maxLength={10000}
-                disabled={saving}
-              />
-            </div>
-            <div>
-              <Label>Tags</Label>
-              <div className="mt-1 flex flex-wrap gap-2">
-                {tags.map((tag) => (
-                  <span
-                    key={tag}
-                    className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700"
+            {/* Address */}
+            {customerId && customerData && (
+              <div>
+                <Label>Address</Label>
+                {customerData.addresses.length === 0 ? (
+                  <p className="mt-1 text-sm text-slate-500">No addresses on file.</p>
+                ) : (
+                  <select
+                    className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                    value={addressId}
+                    onChange={(e) => setAddressId(e.target.value)}
+                    disabled={saving}
                   >
-                    {tag}
-                    <button
-                      type="button"
-                      className="text-slate-400 hover:text-slate-700"
-                      onClick={() => setTags(tags.filter((t) => t !== tag))}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
+                    <option value="">Select address…</option>
+                    {customerData.addresses.map((a) => {
+                      const line = [a.street, a.unit, a.city, a.state, a.zip]
+                        .filter(Boolean)
+                        .join(', ');
+                      return (
+                        <option key={a.id} value={a.id}>
+                          {line || 'No details'}
+                        </option>
+                      );
+                    })}
+                  </select>
+                )}
               </div>
-              <div className="mt-1 flex gap-2">
+            )}
+
+            {/* Service & Price */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label>Service</Label>
+                <select
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                  value={serviceId ?? ''}
+                  onChange={(e) => setServiceId(e.target.value || null)}
+                  disabled={saving}
+                >
+                  <option value="">None</option>
+                  {services.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <Label>Price ($)</Label>
                 <Input
-                  value={tagInput}
-                  placeholder="Add tag"
-                  onChange={(e) => setTagInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      const t = tagInput.trim();
-                      if (t && !tags.includes(t)) setTags([...tags, t]);
-                      setTagInput('');
-                    }
+                  className="mt-1"
+                  type="text"
+                  inputMode="decimal"
+                  value={priceDisplay}
+                  onChange={(e) => {
+                    setPriceDisplay(e.target.value);
+                    const cents = Math.round(Number.parseFloat(e.target.value || '0') * 100);
+                    setPriceCents(Number.isNaN(cents) ? 0 : Math.max(0, cents));
                   }}
                   disabled={saving}
                 />
               </div>
             </div>
-          </div>
-        </Section>
 
-        {/* ── Schedule + Assign + Repeat — all in one section ───────── */}
-        <Section title="Schedule">
-          <div className="space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <Label>Start</Label>
-                <input
-                  type="datetime-local"
-                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                  value={startAt}
-                  onChange={(e) => setStartAt(e.target.value)}
-                  disabled={saving}
-                />
-              </div>
-              <div>
-                <Label>End</Label>
-                <input
-                  type="datetime-local"
-                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-                  value={endAt}
-                  onChange={(e) => setEndAt(e.target.value)}
-                  disabled={saving}
-                />
-              </div>
-            </div>
-
+            {/* Assign to */}
             <div>
               <Label>Assign to</Label>
               <select
@@ -405,16 +314,87 @@ export default function NewJobPage() {
               </select>
             </div>
 
+            {/* Notes */}
+            <div>
+              <Label>Private notes</Label>
+              <textarea
+                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500"
+                rows={2}
+                value={privateNotes}
+                onChange={(e) => setPrivateNotes(e.target.value)}
+                maxLength={10000}
+                disabled={saving}
+              />
+            </div>
+
+            {/* Tags */}
+            <div>
+              <Label>Tags</Label>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                {tags.map((tag) => (
+                  <span
+                    key={tag}
+                    className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700"
+                  >
+                    {tag}
+                    <button
+                      type="button"
+                      className="text-slate-400 hover:text-slate-700"
+                      onClick={() => setTags(tags.filter((t) => t !== tag))}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+                <Input
+                  className="h-7 w-28 text-xs"
+                  value={tagInput}
+                  placeholder="+ tag"
+                  onChange={(e) => setTagInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      const t = tagInput.trim();
+                      if (t && !tags.includes(t)) setTags([...tags, t]);
+                      setTagInput('');
+                    }
+                  }}
+                  disabled={saving}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* ── Right column: schedule ─────────────────────────── */}
+          <div className="space-y-3">
+            {/* Start */}
+            <div>
+              <Label>Start</Label>
+              <input
+                type="datetime-local"
+                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                value={startAt}
+                onChange={(e) => setStartAt(e.target.value)}
+                disabled={saving}
+              />
+            </div>
+
+            {/* End */}
+            <div>
+              <Label>End</Label>
+              <input
+                type="datetime-local"
+                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                value={endAt}
+                onChange={(e) => setEndAt(e.target.value)}
+                disabled={saving}
+              />
+            </div>
+
             <RecurrenceEditor
               scheduledDate={scheduledDate}
               value={recurrenceRule}
-              onChange={(rule) => {
-                setRecurrenceRule(rule);
-                // If user picks a repeat, clear "unscheduled" hint
-                if (rule && !isScheduled) {
-                  // They'll need to fill in dates — validation handles it
-                }
-              }}
+              onChange={(rule) => setRecurrenceRule(rule)}
               disabled={saving}
             />
 
@@ -429,10 +409,10 @@ export default function NewJobPage() {
               </p>
             )}
           </div>
-        </Section>
+        </div>
 
-        {/* ── Actions ───────────────────────────────────────────────── */}
-        <div className="flex justify-end gap-2">
+        {/* ── Actions ─────────────────────────────────────────── */}
+        <div className="mt-4 flex justify-end gap-2">
           <Button type="button" variant="secondary" onClick={() => router.back()} disabled={saving}>
             Cancel
           </Button>
@@ -445,14 +425,5 @@ export default function NewJobPage() {
         </div>
       </form>
     </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section>
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">{title}</h2>
-      {children}
-    </section>
   );
 }

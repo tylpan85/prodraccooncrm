@@ -1,7 +1,7 @@
 'use client';
 
 import type { RecurrenceRuleInput } from '@openclaw/shared';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 
@@ -177,10 +177,12 @@ export interface RecurrenceEditorProps {
   /** Callback when rule changes */
   onChange: (rule: RecurrenceRuleInput | null) => void;
   disabled?: boolean;
+  /** Start with the custom panel open (use when editing an existing recurring job) */
+  defaultOpen?: boolean;
 }
 
-export function RecurrenceEditor({ scheduledDate, value, onChange, disabled }: RecurrenceEditorProps) {
-  const [showCustom, setShowCustom] = useState(false);
+export function RecurrenceEditor({ scheduledDate, value, onChange, disabled, defaultOpen }: RecurrenceEditorProps) {
+  const [showCustom, setShowCustom] = useState(defaultOpen ?? false);
   const presets = useMemo(() => getPresetsForDate(scheduledDate), [scheduledDate]);
 
   // Determine which preset matches the current value
@@ -229,7 +231,7 @@ export function RecurrenceEditor({ scheduledDate, value, onChange, disabled }: R
       </div>
 
       {/* Custom editor */}
-      {showCustom && value && (
+      {(showCustom || activePreset === 'custom') && value && (
         <CustomRecurrenceEditor value={value} onChange={onChange} disabled={disabled} />
       )}
     </div>
@@ -300,7 +302,7 @@ function CustomRecurrenceEditor({
       {/* Weekly: day-of-week circles */}
       {freq === 'weekly' && (
         <WeekdayPicker
-          selected={value.recurrenceDayOfWeek ?? []}
+          selected={(value.recurrenceDayOfWeek ?? []).map((d) => d.toUpperCase() as DayOfWeek)}
           onChange={(days) => patch({ recurrenceDayOfWeek: days })}
           disabled={disabled}
         />

@@ -1,12 +1,17 @@
+import argon2 from 'argon2';
 import { prisma } from '@openclaw/db';
 import {
   ERROR_CODES,
+  createLeadSourceRequestSchema,
   createServiceRequestSchema,
   createTeamMemberRequestSchema,
+  createUserRequestSchema,
   isValidTimezone,
+  updateLeadSourceRequestSchema,
   updateOrganizationRequestSchema,
   updateServiceRequestSchema,
   updateTeamMemberRequestSchema,
+  updateUserRequestSchema,
 } from '@openclaw/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -345,10 +350,87 @@ export async function identityRoutes(fastify: FastifyInstance) {
     return reply.send({ item: { id } });
   });
 
+  fastify.get('/api/lead-sources', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { includeInactive } = includeInactiveQuery.parse(req.query);
+    const sources = await prisma.leadSource.findMany({
+      where: {
+        organizationId: req.auth.orgId,
+        ...(includeInactive ? {} : { active: true }),
+      },
+      orderBy: [{ active: 'desc' }, { name: 'asc' }],
+    });
+    return reply.send({ items: sources.map((s) => ({ id: s.id, name: s.name, active: s.active })) });
+  });
+
+  fastify.post('/api/lead-sources', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const body = createLeadSourceRequestSchema.parse(req.body);
+    try {
+      const source = await prisma.leadSource.create({
+        data: { organizationId: req.auth.orgId, name: body.name },
+      });
+      await auditLog(prisma, {
+        organizationId: req.auth.orgId,
+        actorUserId: req.auth.sub,
+        entityType: 'lead_source',
+        entityId: source.id,
+        action: 'create',
+      });
+      return reply.code(201).send({ item: { id: source.id, name: source.name, active: source.active } });
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        throw new ApiError(ERROR_CODES.LEAD_SOURCE_DUPLICATE, 400, 'Lead source name already exists');
+      }
+      throw err;
+    }
+  });
+
+  fastify.patch('/api/lead-sources/:id', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const body = updateLeadSourceRequestSchema.parse(req.body);
+    const existing = await prisma.leadSource.findFirst({ where: { id, organizationId: req.auth.orgId } });
+    if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Lead source not found');
+    try {
+      const source = await prisma.leadSource.update({ where: { id }, data: body });
+      await auditLog(prisma, {
+        organizationId: req.auth.orgId,
+        actorUserId: req.auth.sub,
+        entityType: 'lead_source',
+        entityId: id,
+        action: 'update',
+      });
+      return reply.send({ item: { id: source.id, name: source.name, active: source.active } });
+    } catch (err) {
+      if (isUniqueConstraintError(err)) {
+        throw new ApiError(ERROR_CODES.LEAD_SOURCE_DUPLICATE, 400, 'Lead source name already exists');
+      }
+      throw err;
+    }
+  });
+
+  fastify.delete('/api/lead-sources/:id', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const existing = await prisma.leadSource.findFirst({ where: { id, organizationId: req.auth.orgId }, select: { id: true } });
+    if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Lead source not found');
+    await prisma.leadSource.delete({ where: { id } });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'lead_source',
+      entityId: id,
+      action: 'delete',
+    });
+    return reply.send({ item: { id } });
+  });
+
   fastify.get('/api/users', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { includeInactive: showArchived } = includeInactiveQuery.parse(req.query);
     const users = await prisma.user.findMany({
-      where: { organizationId: req.auth.orgId },
+      where: { organizationId: req.auth.orgId, archived: showArchived || false },
       orderBy: { email: 'asc' },
     });
     return reply.send({
@@ -357,7 +439,99 @@ export async function identityRoutes(fastify: FastifyInstance) {
         email: u.email,
         role: u.role,
         mustResetPassword: u.mustResetPassword,
+        archived: u.archived,
       })),
+    });
+  });
+
+  fastify.post('/api/users', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const body = createUserRequestSchema.parse(req.body);
+    const existing = await prisma.user.findUnique({ where: { email: body.email } });
+    if (existing) {
+      throw new ApiError(ERROR_CODES.USER_DUPLICATE, 400, 'A user with this email already exists');
+    }
+    const passwordHash = await argon2.hash(body.password, { type: argon2.argon2id });
+    const user = await prisma.user.create({
+      data: {
+        organizationId: req.auth.orgId,
+        email: body.email,
+        passwordHash,
+        role: body.role,
+        mustResetPassword: true,
+      },
+    });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'user',
+      entityId: user.id,
+      action: 'create',
+    });
+    return reply.code(201).send({
+      item: { id: user.id, email: user.email, role: user.role, mustResetPassword: user.mustResetPassword, archived: user.archived },
+    });
+  });
+
+  fastify.patch('/api/users/:id', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const body = updateUserRequestSchema.parse(req.body);
+    const existing = await prisma.user.findFirst({ where: { id, organizationId: req.auth.orgId } });
+    if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'User not found');
+    if (body.email && body.email !== existing.email) {
+      const dup = await prisma.user.findUnique({ where: { email: body.email } });
+      if (dup) throw new ApiError(ERROR_CODES.USER_DUPLICATE, 400, 'A user with this email already exists');
+    }
+    const user = await prisma.user.update({ where: { id }, data: body });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'user',
+      entityId: id,
+      action: 'update',
+    });
+    return reply.send({
+      item: { id: user.id, email: user.email, role: user.role, mustResetPassword: user.mustResetPassword, archived: user.archived },
+    });
+  });
+
+  fastify.patch('/api/users/:id/archive', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const existing = await prisma.user.findFirst({ where: { id, organizationId: req.auth.orgId } });
+    if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'User not found');
+    if (id === req.auth.sub) {
+      throw new ApiError(ERROR_CODES.FORBIDDEN, 403, 'You cannot archive your own account');
+    }
+    const user = await prisma.user.update({ where: { id }, data: { archived: true } });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'user',
+      entityId: id,
+      action: 'archive',
+    });
+    return reply.send({
+      item: { id: user.id, email: user.email, role: user.role, mustResetPassword: user.mustResetPassword, archived: user.archived },
+    });
+  });
+
+  fastify.patch('/api/users/:id/unarchive', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const existing = await prisma.user.findFirst({ where: { id, organizationId: req.auth.orgId } });
+    if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'User not found');
+    const user = await prisma.user.update({ where: { id }, data: { archived: false } });
+    await auditLog(prisma, {
+      organizationId: req.auth.orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'user',
+      entityId: id,
+      action: 'unarchive',
+    });
+    return reply.send({
+      item: { id: user.id, email: user.email, role: user.role, mustResetPassword: user.mustResetPassword, archived: user.archived },
     });
   });
 }

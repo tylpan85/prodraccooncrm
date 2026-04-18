@@ -3,7 +3,6 @@
 import { useRouter } from 'next/navigation';
 import { type ReactNode, useEffect } from 'react';
 import { ErrorBoundary } from '../../components/common/error-boundary';
-import { PasswordResetDialog } from '../../components/common/password-reset-dialog';
 import { Topbar } from '../../components/common/topbar';
 import { ApiClientError } from '../../lib/api-client';
 import { useSession } from '../../lib/session';
@@ -36,7 +35,6 @@ export default function AppLayout({ children }: { children: ReactNode }) {
       <main className="flex-1">
         <ErrorBoundary>{children}</ErrorBoundary>
       </main>
-      {session.user.mustResetPassword && <PasswordResetDialog />}
     </div>
   );
 }

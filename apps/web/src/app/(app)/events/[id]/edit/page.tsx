@@ -65,8 +65,8 @@ export default function EditEventPage() {
         name: name.trim() || null,
         note: note.trim() || null,
         location: location.trim() || null,
-        scheduledStartAt: `${startAt}:00.000Z`,
-        scheduledEndAt: `${endAt}:00.000Z`,
+        scheduledStartAt: new Date(startAt).toISOString(),
+        scheduledEndAt: new Date(endAt).toISOString(),
         assigneeTeamMemberId: assigneeId || null,
       }),
     onSuccess: () => {

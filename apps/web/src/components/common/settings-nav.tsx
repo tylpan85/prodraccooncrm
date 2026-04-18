@@ -7,7 +7,9 @@ import { cn } from '../../lib/cn';
 
 const items: { href: Route; label: string }[] = [
   { href: '/settings/services', label: 'Services' },
+  { href: '/settings/lead-sources', label: 'Lead Sources' },
   { href: '/settings/team', label: 'Team' },
+  { href: '/settings/users', label: 'Users' },
   { href: '/settings/organization', label: 'Organization' },
 ];
 

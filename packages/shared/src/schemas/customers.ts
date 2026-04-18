@@ -140,7 +140,7 @@ function hasIdentity(value: {
 }
 
 export const createCustomerRequestSchema = z
-  .object(baseCustomerFields)
+  .object({ ...baseCustomerFields, phones: z.array(phoneInputSchema).min(1).max(10) })
   .superRefine((value, ctx) => {
     if (!hasIdentity(value)) {
       ctx.addIssue({
@@ -184,6 +184,13 @@ export const updateCustomerRequestSchema = z
         path: ['firstName'],
       });
     }
+    if (value.phones !== undefined && value.phones.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'At least one phone is required',
+        path: ['phones'],
+      });
+    }
   });
 export type UpdateCustomerRequest = z.infer<typeof updateCustomerRequestSchema>;
 
@@ -206,6 +213,10 @@ export const customerListQuerySchema = z.object({
     .optional()
     .transform((v) => (v == null ? 25 : typeof v === 'number' ? v : Number.parseInt(v, 10)))
     .pipe(z.number().int().min(1).max(100)),
+  includeArchived: z
+    .union([z.string(), z.boolean()])
+    .optional()
+    .transform((v) => v === true || v === 'true'),
 });
 export type CustomerListQuery = z.infer<typeof customerListQuerySchema>;
 
@@ -248,6 +259,7 @@ export const customerSummaryDtoSchema = z.object({
   displayName: z.string(),
   customerType: z.enum(CUSTOMER_TYPES),
   doNotService: z.boolean(),
+  archived: z.boolean(),
   primaryPhone: z.string().nullable(),
   primaryEmail: z.string().nullable(),
   city: z.string().nullable(),
@@ -267,6 +279,7 @@ export const customerDtoSchema = z.object({
   customerType: z.enum(CUSTOMER_TYPES),
   subcontractor: z.boolean(),
   doNotService: z.boolean(),
+  archived: z.boolean(),
   sendNotifications: z.boolean(),
   customerNotes: z.string().nullable(),
   leadSource: z.string().nullable(),

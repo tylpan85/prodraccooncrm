@@ -107,8 +107,28 @@ function formatScheduleRange(startIso: string, endIso: string): string {
   return `${formatDate(startIso)} · ${formatTime(startIso)} – ${formatTime(endIso)}`;
 }
 
+function formatSnappedHour(hour: number): string {
+  const h = Math.floor(hour);
+  const m = Math.round((hour - h) * 60);
+  const period = h < 12 ? 'AM' : 'PM';
+  const displayH = h === 0 ? 12 : h > 12 ? h - 12 : h;
+  return `${displayH}:${m.toString().padStart(2, '0')} ${period}`;
+}
+
+function formatDateShort(dateStr: string): string {
+  const parts = dateStr.split('-').map(Number);
+  const dt = new Date(parts[0] ?? 0, (parts[1] ?? 1) - 1, parts[2] ?? 1);
+  return dt.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 function formatCents(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
+}
+
+function hourToDatetimeLocal(date: string, hour: number): string {
+  const h = String(Math.floor(hour)).padStart(2, '0');
+  const m = String(Math.round((hour % 1) * 60)).padStart(2, '0');
+  return `${date}T${h}:${m}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +315,13 @@ export default function SchedulerPage() {
               showUnassigned={showUnassigned}
               onJobClick={(id) => setSlideOver({ type: 'job', id })}
               onEventClick={(id) => setSlideOver({ type: 'event', id })}
+              onEmptySlotClick={(d, startHour, assigneeTeamMemberId) => {
+                const sp = new URLSearchParams();
+                sp.set('scheduledStartAt', hourToDatetimeLocal(d, startHour));
+                sp.set('scheduledEndAt', hourToDatetimeLocal(d, startHour + 1));
+                if (assigneeTeamMemberId) sp.set('assigneeTeamMemberId', assigneeTeamMemberId);
+                router.push(`/jobs/new?${sp.toString()}` as import('next').Route);
+              }}
             />
           ) : (
             <MonthView
@@ -317,6 +344,7 @@ export default function SchedulerPage() {
           )}
         </SlideOver>
       )}
+
     </div>
   );
 }
@@ -631,12 +659,14 @@ function DayView({
   showUnassigned,
   onJobClick,
   onEventClick,
+  onEmptySlotClick,
 }: {
   date: string;
   activeTeamIds: Set<string> | null;
   showUnassigned: boolean;
   onJobClick: (id: string) => void;
   onEventClick: (id: string) => void;
+  onEmptySlotClick: (date: string, startHour: number, assigneeTeamMemberId: string | null) => void;
 }) {
   const queryClient = useQueryClient();
   const dayQuery = useQuery({
@@ -652,6 +682,7 @@ function DayView({
   const [hoverLaneKey, setHoverLaneKey] = useState<string | null>(null);
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
   const [showScopeDialog, setShowScopeDialog] = useState(false);
+  const [dragPreview, setDragPreview] = useState<{ snappedHour: number; displayName: string; x: number; y: number } | null>(null);
 
   const dropMutation = useMutation({
     mutationFn: async (vars: PendingDrop & { scope?: 'this' | 'this_and_future' }) => {
@@ -892,13 +923,27 @@ function DayView({
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'move';
                 if (hoverLaneKey !== laneKey) setHoverLaneKey(laneKey);
+                const rect = e.currentTarget.getBoundingClientRect();
+                const offsetY = e.clientY - rect.top;
+                const droppedHour = MIN_HOUR + offsetY / HOUR_HEIGHT;
+                const snappedHour = Math.min(Math.max(Math.round(droppedHour * 2) / 2, MIN_HOUR), MAX_HOUR);
+                setDragPreview({ snappedHour, displayName: lane.displayName, x: e.clientX, y: e.clientY });
               }}
               onDragLeave={(e) => {
                 // Only clear if leaving the grid for a non-child element
                 if (e.currentTarget.contains(e.relatedTarget as Node)) return;
                 if (hoverLaneKey === laneKey) setHoverLaneKey(null);
+                setDragPreview(null);
               }}
               onDrop={(e) => handleDrop(e, lane.teamMemberId)}
+              onClick={(e) => {
+                if ((e.target as HTMLElement).closest('button')) return;
+                const rect = e.currentTarget.getBoundingClientRect();
+                const offsetY = e.clientY - rect.top;
+                const raw = MIN_HOUR + offsetY / HOUR_HEIGHT;
+                const snapped = Math.max(MIN_HOUR, Math.min(Math.round(raw * 2) / 2, MAX_HOUR - 0.5));
+                onEmptySlotClick(date, snapped, lane.teamMemberId);
+              }}
             >
               {/* Hour lines */}
               {Array.from({ length: totalHours }, (_, i) => {
@@ -951,6 +996,7 @@ function DayView({
                     onDragEnd={() => {
                       setDraggingJobId(null);
                       setHoverLaneKey(null);
+                      setDragPreview(null);
                     }}
                     className={cn(
                       'absolute left-1 right-1 cursor-grab overflow-hidden rounded px-2 py-1 text-left text-xs shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing',
@@ -1005,6 +1051,16 @@ function DayView({
           );
         })}
       </div>
+
+      {/* Drag preview tooltip */}
+      {dragPreview && draggingJobId && (
+        <div
+          className="pointer-events-none fixed z-50 rounded-lg bg-slate-900 px-3 py-2 text-sm text-white shadow-lg"
+          style={{ left: dragPreview.x + 16, top: dragPreview.y - 40 }}
+        >
+          Move visit to {formatSnappedHour(dragPreview.snappedHour)} · {formatDateShort(date)} · {dragPreview.displayName}
+        </div>
+      )}
 
       {/* Scope dialog for recurring job drops */}
       {showScopeDialog && pendingDrop && (
@@ -1190,6 +1246,7 @@ function SlideOver({ onClose, children }: { onClose: () => void; children: React
 
 function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }) {
   const queryClient = useQueryClient();
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const jobQuery = useQuery({
     queryKey: ['job', jobId],
     queryFn: () => jobsApi.get(jobId),
@@ -1202,11 +1259,6 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
     queryClient.invalidateQueries({ queryKey: ['schedule'] });
   }
 
-  const finishMutation = useMutation({
-    mutationFn: () => jobsApi.finish(jobId),
-    onSuccess: () => invalidate(),
-  });
-
   const reopenMutation = useMutation({
     mutationFn: () => jobsApi.reopen(jobId),
     onSuccess: () => invalidate(),
@@ -1215,6 +1267,17 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
   const unscheduleMutation = useMutation({
     mutationFn: () => jobsApi.unschedule(jobId),
     onSuccess: () => invalidate(),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (scope?: 'this' | 'this_and_future') =>
+      scope
+        ? jobsApi.occurrenceDelete(jobId, { scope }).then(() => {})
+        : jobsApi.delete(jobId),
+    onSuccess: () => {
+      invalidate();
+      onClose();
+    },
   });
 
   if (jobQuery.isLoading) {
@@ -1302,15 +1365,6 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
             Full detail
           </Button>
         </Link>
-        {job.jobStatus === 'open' && (
-          <Button
-            size="sm"
-            onClick={() => finishMutation.mutate()}
-            disabled={finishMutation.isPending}
-          >
-            {finishMutation.isPending ? 'Finishing…' : 'Finish'}
-          </Button>
-        )}
         {job.jobStatus === 'finished' && job.invoice?.status === 'draft' && (
           <Button
             variant="secondary"
@@ -1331,7 +1385,76 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
             Unschedule
           </Button>
         )}
+        <Button
+          variant="danger"
+          size="sm"
+          onClick={() => setShowDeleteDialog(true)}
+          disabled={deleteMutation.isPending}
+        >
+          Delete
+        </Button>
       </div>
+
+      {showDeleteDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
+            {job.recurringSeriesId ? (
+              <>
+                <h3 className="text-lg font-semibold text-slate-900">Delete recurring job</h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  This job is part of a recurring series. Delete:
+                </p>
+                <div className="mt-4 flex flex-col gap-2">
+                  <Button
+                    variant="danger"
+                    onClick={() => deleteMutation.mutate('this')}
+                    disabled={deleteMutation.isPending}
+                  >
+                    {deleteMutation.isPending ? 'Deleting…' : 'Only this job'}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => deleteMutation.mutate('this_and_future')}
+                    disabled={deleteMutation.isPending}
+                  >
+                    {deleteMutation.isPending ? 'Deleting…' : 'This and all future jobs'}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setShowDeleteDialog(false)}
+                    disabled={deleteMutation.isPending}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <h3 className="text-lg font-semibold text-slate-900">Delete job?</h3>
+                <p className="mt-2 text-sm text-slate-600">
+                  This action cannot be undone.
+                </p>
+                <div className="mt-4 flex flex-col gap-2">
+                  <Button
+                    variant="danger"
+                    onClick={() => deleteMutation.mutate(undefined)}
+                    disabled={deleteMutation.isPending}
+                  >
+                    {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setShowDeleteDialog(false)}
+                    disabled={deleteMutation.isPending}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

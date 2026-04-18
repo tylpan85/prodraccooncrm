@@ -26,6 +26,28 @@ export type TeamMemberDto = z.infer<typeof teamMemberDtoSchema>;
 
 const hexColor = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Color must be a hex like #1a2b3c');
 
+export const leadSourceDtoSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string(),
+  active: z.boolean(),
+});
+export type LeadSourceDto = z.infer<typeof leadSourceDtoSchema>;
+
+export const createLeadSourceRequestSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+});
+export type CreateLeadSourceRequest = z.infer<typeof createLeadSourceRequestSchema>;
+
+export const updateLeadSourceRequestSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    active: z.boolean().optional(),
+  })
+  .refine((value) => value.name !== undefined || value.active !== undefined, {
+    message: 'At least one field is required',
+  });
+export type UpdateLeadSourceRequest = z.infer<typeof updateLeadSourceRequestSchema>;
+
 export const createServiceRequestSchema = z.object({
   name: z.string().trim().min(1).max(120),
 });
@@ -51,6 +73,33 @@ export type CreateTeamMemberRequest = z.infer<typeof createTeamMemberRequestSche
 
 export const updateTeamMemberRequestSchema = createTeamMemberRequestSchema.partial();
 export type UpdateTeamMemberRequest = z.infer<typeof updateTeamMemberRequestSchema>;
+
+export const settingsUserDtoSchema = z.object({
+  id: z.string().uuid(),
+  email: z.string().email(),
+  role: z.string(),
+  mustResetPassword: z.boolean(),
+  archived: z.boolean(),
+});
+export type SettingsUserDto = z.infer<typeof settingsUserDtoSchema>;
+
+export const createUserRequestSchema = z.object({
+  email: z.string().email().trim().toLowerCase(),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+  role: z.enum(['admin', 'member']),
+});
+export type CreateUserRequest = z.infer<typeof createUserRequestSchema>;
+
+export const updateUserRequestSchema = z
+  .object({
+    email: z.string().email().trim().toLowerCase().optional(),
+    role: z.enum(['admin', 'member']).optional(),
+    mustResetPassword: z.boolean().optional(),
+  })
+  .refine((v) => v.email !== undefined || v.role !== undefined || v.mustResetPassword !== undefined, {
+    message: 'At least one field is required',
+  });
+export type UpdateUserRequest = z.infer<typeof updateUserRequestSchema>;
 
 export const updateOrganizationRequestSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),

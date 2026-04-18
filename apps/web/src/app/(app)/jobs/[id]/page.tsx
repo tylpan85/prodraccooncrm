@@ -4,7 +4,7 @@ import type { JobDto, TeamMemberDto } from '@openclaw/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Route } from 'next';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Button } from '../../../../components/ui/button';
 import { Label } from '../../../../components/ui/label';
@@ -25,13 +25,13 @@ function formatDate(iso: string | null): string {
     year: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
-    timeZone: 'UTC',
   });
 }
 
 export default function JobDetailPage() {
   const params = useParams<{ id: string }>();
   const queryClient = useQueryClient();
+  const router = useRouter();
   const id = params.id;
 
   const jobQuery = useQuery({
@@ -48,11 +48,27 @@ export default function JobDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
   const [showAssignDialog, setShowAssignDialog] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['job', id] });
     queryClient.invalidateQueries({ queryKey: ['jobs'] });
+    queryClient.invalidateQueries({ queryKey: ['schedule'] });
   }
+
+  const deleteMutation = useMutation({
+    mutationFn: (scope?: 'this' | 'this_and_future') => {
+      if (scope) {
+        return jobsApi.occurrenceDelete(id, { scope }).then(() => {});
+      }
+      return jobsApi.delete(id);
+    },
+    onSuccess: () => {
+      invalidate();
+      router.push('/scheduler' as Route);
+    },
+    onError: (err) => setError(err instanceof ApiClientError ? err.message : 'Failed to delete'),
+  });
 
   const finishMutation = useMutation({
     mutationFn: () => jobsApi.finish(id),
@@ -137,6 +153,13 @@ export default function JobDetailPage() {
           <Link href={`/jobs/${job.id}/edit` as Route}>
             <Button variant="secondary">Edit</Button>
           </Link>
+          <Button
+            variant="ghost"
+            className="text-red-600 hover:bg-red-50 hover:text-red-700"
+            onClick={() => setShowDeleteDialog(true)}
+          >
+            Delete
+          </Button>
         </div>
       </div>
 
@@ -266,6 +289,69 @@ export default function JobDetailPage() {
           }}
         />
       )}
+
+      {/* Delete dialog */}
+      {showDeleteDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">Delete {job.jobNumber}</h3>
+            {job.recurringSeriesId ? (
+              <>
+                <p className="mt-2 text-sm text-slate-600">
+                  This job is part of a recurring series. What do you want to delete?
+                </p>
+                <div className="mt-4 flex flex-col gap-2">
+                  <Button
+                    variant="ghost"
+                    className="justify-start text-red-600 hover:bg-red-50"
+                    onClick={() => deleteMutation.mutate('this')}
+                    disabled={deleteMutation.isPending}
+                  >
+                    {deleteMutation.isPending ? 'Deleting…' : 'Only this job'}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="justify-start text-red-600 hover:bg-red-50"
+                    onClick={() => deleteMutation.mutate('this_and_future')}
+                    disabled={deleteMutation.isPending}
+                  >
+                    {deleteMutation.isPending ? 'Deleting…' : 'This and all future jobs'}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={() => setShowDeleteDialog(false)}
+                    disabled={deleteMutation.isPending}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="mt-2 text-sm text-slate-600">
+                  Are you sure you want to delete this job? This cannot be undone.
+                </p>
+                <div className="mt-4 flex justify-end gap-2">
+                  <Button
+                    variant="secondary"
+                    onClick={() => setShowDeleteDialog(false)}
+                    disabled={deleteMutation.isPending}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    className="bg-red-600 hover:bg-red-700"
+                    onClick={() => deleteMutation.mutate(undefined)}
+                    disabled={deleteMutation.isPending}
+                  >
+                    {deleteMutation.isPending ? 'Deleting…' : 'Delete'}
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -316,8 +402,8 @@ function ScheduleDialog({
   const mutation = useMutation({
     mutationFn: () =>
       jobsApi.schedule(jobId, {
-        scheduledStartAt: `${startAt}:00.000Z`,
-        scheduledEndAt: `${endAt}:00.000Z`,
+        scheduledStartAt: new Date(startAt).toISOString(),
+        scheduledEndAt: new Date(endAt).toISOString(),
         assigneeTeamMemberId: assigneeId || null,
       }),
     onSuccess,

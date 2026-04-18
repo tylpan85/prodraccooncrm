@@ -516,6 +516,12 @@ export async function recurringRoutes(fastify: FastifyInstance) {
             recurrenceEndMode: series.recurrenceEndMode,
             recurrenceEnabled: series.recurrenceEnabled,
             recurrenceRuleVersion: series.recurrenceRuleVersion,
+            recurrenceDayOfWeek: series.recurrenceDayOfWeek,
+            recurrenceOccurrenceCount: series.recurrenceOccurrenceCount,
+            recurrenceEndDate: series.recurrenceEndDate,
+            recurrenceDayOfMonth: series.recurrenceDayOfMonth,
+            recurrenceOrdinal: series.recurrenceOrdinal,
+            recurrenceMonthOfYear: series.recurrenceMonthOfYear,
           }
         : null,
     });
@@ -629,6 +635,54 @@ export async function recurringRoutes(fastify: FastifyInstance) {
       const pivotData = buildJobUpdateData(changes);
       pivotData.generatedFromRuleVersion = nextRuleVersion;
       pivotData.isExceptionInstance = false;
+
+      // When the recurrence rule changes but no explicit date was provided, realign the pivot
+      // to the first occurrence of the new rule. E.g. if user changes TUE→WED without touching
+      // the date field, the Tue Mar 12 occurrence must move to Wed Mar 13, not stay behind.
+      if (hasNewRule && !changes.scheduledStartAt && body.recurrenceRule) {
+        const nr = body.recurrenceRule;
+        const newRule: RecurrenceRule = {
+          recurrenceFrequency: nr.recurrenceFrequency as RecurrenceRule['recurrenceFrequency'],
+          recurrenceInterval: nr.recurrenceInterval,
+          recurrenceEndMode: nr.recurrenceEndMode as RecurrenceRule['recurrenceEndMode'],
+          recurrenceOccurrenceCount: nr.recurrenceOccurrenceCount ?? null,
+          recurrenceEndDate: nr.recurrenceEndDate ?? null,
+          recurrenceDayOfWeek: (nr.recurrenceDayOfWeek?.length
+            ? nr.recurrenceDayOfWeek
+            : null) as RecurrenceRule['recurrenceDayOfWeek'],
+          recurrenceDayOfMonth: nr.recurrenceDayOfMonth ?? null,
+          recurrenceOrdinal: nr.recurrenceOrdinal as RecurrenceRule['recurrenceOrdinal'],
+          recurrenceMonthOfYear:
+            nr.recurrenceMonthOfYear as RecurrenceRule['recurrenceMonthOfYear'],
+        };
+        const pivotLocalDate = new Date(
+          job.scheduledStartAt.getFullYear(),
+          job.scheduledStartAt.getMonth(),
+          job.scheduledStartAt.getDate(),
+        );
+        const firstOccurrences = generateOccurrenceDates(
+          newRule,
+          pivotLocalDate,
+          1,
+          computeHorizonDate(newRule),
+          0,
+        );
+        const firstDate = firstOccurrences[0];
+        if (firstDate && firstDate.getTime() !== pivotLocalDate.getTime()) {
+          const durationMs =
+            (job.scheduledEndAt?.getTime() ?? 0) - job.scheduledStartAt.getTime();
+          const newStart = new Date(firstDate);
+          newStart.setHours(
+            job.scheduledStartAt.getHours(),
+            job.scheduledStartAt.getMinutes(),
+            job.scheduledStartAt.getSeconds(),
+            job.scheduledStartAt.getMilliseconds(),
+          );
+          pivotData.scheduledStartAt = newStart;
+          pivotData.scheduledEndAt = new Date(newStart.getTime() + durationMs);
+          pivotData.scheduleState = 'scheduled';
+        }
+      }
 
       const tags = changes.tags ? dedupeTags(changes.tags) : undefined;
       const updatedPivot = await tx.job.update({
