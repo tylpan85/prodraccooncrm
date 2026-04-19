@@ -94,7 +94,6 @@ export default function NewJobPage() {
   // Recurrence
   const [recurrenceRule, setRecurrenceRule] = useState<RecurrenceRuleInput | null>(null);
   const isRecurring = recurrenceRule !== null;
-  const isScheduled = startAt !== '' && endAt !== '';
 
   // Derive scheduled date for preset labels
   const scheduledDate = useMemo(() => {
@@ -111,7 +110,6 @@ export default function NewJobPage() {
       if (!customerId) throw new Error('No customer selected');
 
       if (isRecurring) {
-        if (!isScheduled) throw new Error('Start and end times are required for recurring jobs');
         return recurringApi.create({
           customerId,
           job: {
@@ -138,9 +136,9 @@ export default function NewJobPage() {
         priceCents,
         privateNotes: privateNotes.trim() || null,
         tags: tags.length > 0 ? tags : undefined,
-        scheduledStartAt: isScheduled ? new Date(startAt).toISOString() : null,
-        scheduledEndAt: isScheduled ? new Date(endAt).toISOString() : null,
-        assigneeTeamMemberId: isScheduled && assigneeId ? assigneeId : null,
+        scheduledStartAt: new Date(startAt).toISOString(),
+        scheduledEndAt: new Date(endAt).toISOString(),
+        assigneeTeamMemberId: assigneeId || null,
       });
     },
     onSuccess: () => {
@@ -398,16 +396,6 @@ export default function NewJobPage() {
               disabled={saving}
             />
 
-            {!isScheduled && (
-              <p className="text-xs text-slate-500">
-                Leave dates empty to create an unscheduled job.
-              </p>
-            )}
-            {isRecurring && !isScheduled && (
-              <p className="text-xs text-amber-600">
-                Start and end times are required for recurring jobs.
-              </p>
-            )}
           </div>
         </div>
 
@@ -418,7 +406,7 @@ export default function NewJobPage() {
           </Button>
           <Button
             type="submit"
-            disabled={saving || !customerId || !addressId || (isRecurring && !isScheduled)}
+            disabled={saving || !customerId || !addressId || !startAt || !endAt}
           >
             {saving ? 'Creating…' : isRecurring ? 'Create recurring job' : 'Create job'}
           </Button>

@@ -67,12 +67,10 @@ function jobDto(j: JobRecord) {
     priceCents: j.priceCents,
     leadSource: j.leadSource,
     privateNotes: j.privateNotes,
-    scheduleState: j.scheduleState,
-    scheduledStartAt: j.scheduledStartAt?.toISOString() ?? null,
-    scheduledEndAt: j.scheduledEndAt?.toISOString() ?? null,
+    scheduledStartAt: j.scheduledStartAt.toISOString(),
+    scheduledEndAt: j.scheduledEndAt.toISOString(),
     assigneeTeamMemberId: j.assigneeTeamMemberId,
     assigneeDisplayName: j.assignee?.displayName ?? null,
-    jobStatus: j.jobStatus,
     jobStage: j.jobStage,
     finishedAt: j.finishedAt?.toISOString() ?? null,
     tags: j.tags.map((t) => t.tag),
@@ -142,8 +140,7 @@ async function validateAssignee(teamMemberId: string, orgId: string) {
   }
 }
 
-async function checkDnsBlock(customerId: string, orgId: string, isScheduled: boolean) {
-  if (!isScheduled) return;
+async function checkDnsBlock(customerId: string, orgId: string) {
   const customer = await prisma.customer.findFirst({
     where: { id: customerId, organizationId: orgId },
     select: { doNotService: true },
@@ -181,9 +178,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
 
     await validateAddressOwnership(customerId, body.customerAddressId, req.auth.orgId);
 
-    const isScheduled = body.scheduledStartAt != null && body.scheduledEndAt != null;
-
-    if (isScheduled && customer.doNotService) {
+    if (customer.doNotService) {
       throw new ApiError(
         ERROR_CODES.DO_NOT_SERVICE_BLOCK,
         400,
@@ -223,9 +218,8 @@ export async function jobsRoutes(fastify: FastifyInstance) {
           priceCents: body.priceCents ?? 0,
           leadSource: body.leadSource ?? null,
           privateNotes: body.privateNotes ?? null,
-          scheduleState: isScheduled ? 'scheduled' : 'unscheduled',
-          scheduledStartAt: body.scheduledStartAt ? new Date(body.scheduledStartAt) : null,
-          scheduledEndAt: body.scheduledEndAt ? new Date(body.scheduledEndAt) : null,
+          scheduledStartAt: new Date(body.scheduledStartAt),
+          scheduledEndAt: new Date(body.scheduledEndAt),
           assigneeTeamMemberId: body.assigneeTeamMemberId ?? null,
           tags: tags.length > 0 ? { create: tags.map((tag) => ({ tag })) } : undefined,
         },
@@ -255,8 +249,6 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       deletedFromSeriesAt: null,
     };
     if (query.customerId) where.customerId = query.customerId;
-    if (query.scheduleState) where.scheduleState = query.scheduleState;
-    if (query.jobStatus) where.jobStatus = query.jobStatus;
     if (query.assigneeTeamMemberId) where.assigneeTeamMemberId = query.assigneeTeamMemberId;
     if (query.dateFrom || query.dateTo) {
       where.scheduledStartAt = {};
@@ -292,12 +284,10 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       customerDisplayName: j.customer.displayName,
       titleOrSummary: j.titleOrSummary,
       priceCents: j.priceCents,
-      scheduleState: j.scheduleState,
-      scheduledStartAt: j.scheduledStartAt?.toISOString() ?? null,
-      scheduledEndAt: j.scheduledEndAt?.toISOString() ?? null,
+      scheduledStartAt: j.scheduledStartAt.toISOString(),
+      scheduledEndAt: j.scheduledEndAt.toISOString(),
       assigneeTeamMemberId: j.assigneeTeamMemberId,
       assigneeDisplayName: j.assignee?.displayName ?? null,
-      jobStatus: j.jobStatus,
       jobStage: j.jobStage,
       finishedAt: j.finishedAt?.toISOString() ?? null,
     }));
@@ -382,7 +372,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
 
     const body = scheduleJobRequestSchema.parse(req.body);
 
-    await checkDnsBlock(existing.customerId, req.auth.orgId, true);
+    await checkDnsBlock(existing.customerId, req.auth.orgId);
 
     if (body.assigneeTeamMemberId) {
       await validateAssignee(body.assigneeTeamMemberId, req.auth.orgId);
@@ -391,7 +381,6 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     const updated = await prisma.job.update({
       where: { id },
       data: {
-        scheduleState: 'scheduled',
         scheduledStartAt: new Date(body.scheduledStartAt),
         scheduledEndAt: new Date(body.scheduledEndAt),
         ...(body.assigneeTeamMemberId !== undefined
@@ -407,37 +396,6 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       entityType: 'job',
       entityId: id,
       action: 'schedule',
-    });
-
-    return reply.send({ item: jobDto(updated) });
-  });
-
-  // ── Unschedule ────────────────────────────────────────────────────────
-  fastify.post('/api/jobs/:id/unschedule', async (req, reply) => {
-    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
-    const { id } = idParam.parse(req.params);
-    const existing = await prisma.job.findFirst({
-      where: { id, organizationId: req.auth.orgId },
-      select: { id: true },
-    });
-    if (!existing) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
-
-    const updated = await prisma.job.update({
-      where: { id },
-      data: {
-        scheduleState: 'unscheduled',
-        scheduledStartAt: null,
-        scheduledEndAt: null,
-      },
-      include: JOB_INCLUDE,
-    });
-
-    await auditLog(prisma, {
-      organizationId: req.auth.orgId,
-      actorUserId: req.auth.sub,
-      entityType: 'job',
-      entityId: id,
-      action: 'unschedule',
     });
 
     return reply.send({ item: jobDto(updated) });
@@ -509,7 +467,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       where: { id, organizationId: req.auth.orgId },
       select: {
         id: true,
-        jobStatus: true,
+        jobStage: true,
         customerId: true,
         titleOrSummary: true,
         priceCents: true,
@@ -523,7 +481,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       const job = await tx.job.update({
         where: { id },
         data: {
-          jobStatus: 'finished',
+          jobStage: 'job_done',
           finishedAt: new Date(),
         },
         include: JOB_INCLUDE,
@@ -589,11 +547,11 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     });
     if (!existing) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
 
-    if (existing.invoice && existing.invoice.status !== 'draft') {
+    if (existing.invoice && existing.invoice.status === 'paid') {
       throw new ApiError(
         ERROR_CODES.INVOICE_NOT_DRAFT_CANNOT_REOPEN,
         400,
-        'Cannot reopen — invoice is no longer a draft',
+        'Cannot reopen — invoice has already been paid',
       );
     }
 
@@ -608,7 +566,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       const reopened = await tx.job.update({
         where: { id },
         data: {
-          jobStatus: 'open',
+          jobStage: 'confirmed',
           finishedAt: null,
         },
         include: JOB_INCLUDE,
@@ -643,7 +601,6 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       where: { id, organizationId: req.auth.orgId },
       select: {
         id: true,
-        jobStatus: true,
         jobStage: true,
         customerId: true,
         titleOrSummary: true,
@@ -654,6 +611,14 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       },
     });
     if (!existing) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
+
+    if (existing.jobStage === 'job_done') {
+      throw new ApiError(
+        ERROR_CODES.VALIDATION_FAILED,
+        400,
+        'Cannot change stage of a completed job — use reopen instead',
+      );
+    }
 
     const orgId = req.auth.orgId;
     const actorUserId = req.auth.sub;
@@ -687,12 +652,11 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       return reply.send({ item: jobDto(updated) });
     }
 
-    // job_done: set stage + finish (auto-invoice) only if not already finished
+    // job_done: set stage + finish (auto-invoice) only if not already done
     if (stage === 'job_done') {
       const result = await prisma.$transaction(async (tx) => {
         const updateData: Record<string, unknown> = { jobStage: 'job_done' };
-        if (existing.jobStatus !== 'finished') {
-          updateData.jobStatus = 'finished';
+        if (existing.jobStage !== 'job_done') {
           updateData.finishedAt = new Date();
         }
         const job = await tx.job.update({
@@ -820,12 +784,10 @@ export async function jobsRoutes(fastify: FastifyInstance) {
         customerDisplayName: j.customer.displayName,
         titleOrSummary: j.titleOrSummary,
         priceCents: j.priceCents,
-        scheduleState: j.scheduleState,
-        scheduledStartAt: j.scheduledStartAt?.toISOString() ?? null,
-        scheduledEndAt: j.scheduledEndAt?.toISOString() ?? null,
+        scheduledStartAt: j.scheduledStartAt.toISOString(),
+        scheduledEndAt: j.scheduledEndAt.toISOString(),
         assigneeTeamMemberId: j.assigneeTeamMemberId,
         assigneeDisplayName: j.assignee?.displayName ?? null,
-        jobStatus: j.jobStatus,
         jobStage: j.jobStage,
         finishedAt: j.finishedAt?.toISOString() ?? null,
       })),

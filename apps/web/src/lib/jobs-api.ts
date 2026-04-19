@@ -12,8 +12,6 @@ import { apiFetch, apiItem, apiItems } from './api-client';
 
 export interface ListJobsParams {
   customerId?: string;
-  scheduleState?: string;
-  jobStatus?: string;
   assigneeTeamMemberId?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -42,7 +40,6 @@ export const jobsApi = {
     apiItem<JobDto>(`/api/jobs/${id}`, { method: 'PATCH', body }),
   schedule: (id: string, body: ScheduleJobRequest) =>
     apiItem<JobDto>(`/api/jobs/${id}/schedule`, { method: 'POST', body }),
-  unschedule: (id: string) => apiItem<JobDto>(`/api/jobs/${id}/unschedule`, { method: 'POST' }),
   assign: (id: string, body: AssignJobRequest) =>
     apiItem<JobDto>(`/api/jobs/${id}/assign`, { method: 'POST', body }),
   unassign: (id: string) => apiItem<JobDto>(`/api/jobs/${id}/unassign`, { method: 'POST' }),

@@ -2,20 +2,19 @@
  * Demo seed — adds realistic sample data on top of the base seed.
  * Run: pnpm seed:demo  (from monorepo root)
  *
- * Creates: 5 customers, ~10 jobs (mix of states), 2 recurring series,
+ * Creates: 5 customers, 8 jobs, 2 recurring series,
  * and a week of events so the scheduler looks alive on first open.
  */
 
 import { prisma } from './index.js';
 import {
   type Prisma,
-  ScheduleState,
-  JobStatus,
   CustomerType,
   InvoiceStatus,
   RecurrenceFrequency,
   RecurrenceEndMode,
   DayOfWeek,
+  JobStage,
 } from '@prisma/client';
 
 const ORG_ID = '00000000-0000-0000-0000-000000000001';
@@ -113,9 +112,8 @@ async function seedDemo() {
   const job1 = await createJob({
     customerId: maria.id, addressId: maria.addressId, serviceId: deepCleaning.id,
     title: 'Deep clean — move-in prep', priceCents: 25000,
-    scheduleState: ScheduleState.scheduled,
     start: dayOffset(-1, 9), end: dayOffset(-1, 12),
-    assigneeId: alex.id, status: JobStatus.finished, finishedAt: dayOffset(-1, 12),
+    assigneeId: alex.id, stage: JobStage.job_done, finishedAt: dayOffset(-1, 12),
   });
   await createInvoice(job1.id, maria.id, 25000, deepCleaning.name, InvoiceStatus.paid);
 
@@ -123,9 +121,8 @@ async function seedDemo() {
   const job2 = await createJob({
     customerId: james.id, addressId: james.addressId, serviceId: windowCleaning.id,
     title: 'Exterior windows', priceCents: 15000,
-    scheduleState: ScheduleState.scheduled,
     start: dayOffset(-2, 10), end: dayOffset(-2, 12),
-    assigneeId: jordan.id, status: JobStatus.finished, finishedAt: dayOffset(-2, 12),
+    assigneeId: jordan.id, stage: JobStage.job_done, finishedAt: dayOffset(-2, 12),
   });
   await createInvoice(job2.id, james.id, 15000, windowCleaning.name, InvoiceStatus.sent);
 
@@ -133,63 +130,42 @@ async function seedDemo() {
   await createJob({
     customerId: sarah.id, addressId: sarah.addressId, serviceId: moveOut.id,
     title: 'Move-out cleaning', priceCents: 35000,
-    scheduleState: ScheduleState.scheduled,
     start: todayAt(9), end: todayAt(13),
-    assigneeId: alex.id, status: JobStatus.open,
+    assigneeId: alex.id, stage: JobStage.scheduled,
   });
 
   // 4. Scheduled today (Downtown — Deep Cleaning, assigned to Jordan)
   await createJob({
     customerId: downtown.id, addressId: downtown.addressId, serviceId: deepCleaning.id,
     title: 'Office deep clean — 4th floor', priceCents: 45000,
-    scheduleState: ScheduleState.scheduled,
     start: todayAt(8), end: todayAt(11),
-    assigneeId: jordan.id, status: JobStatus.open,
+    assigneeId: jordan.id, stage: JobStage.scheduled,
   });
 
   // 5. Scheduled tomorrow (Maria — Window, assigned to Jordan)
   await createJob({
     customerId: maria.id, addressId: maria.addressId, serviceId: windowCleaning.id,
     title: 'Interior windows', priceCents: 12000,
-    scheduleState: ScheduleState.scheduled,
     start: dayOffset(1, 10), end: dayOffset(1, 12),
-    assigneeId: jordan.id, status: JobStatus.open,
+    assigneeId: jordan.id, stage: JobStage.scheduled,
   });
 
   // 6. Scheduled day after tomorrow (James — Deep, assigned to Alex)
   await createJob({
     customerId: james.id, addressId: james.addressId, serviceId: deepCleaning.id,
     title: 'Kitchen + bathroom deep', priceCents: 20000,
-    scheduleState: ScheduleState.scheduled,
     start: dayOffset(2, 14), end: dayOffset(2, 17),
-    assigneeId: alex.id, status: JobStatus.open,
-  });
-
-  // 7. Unscheduled job (Sarah — needs estimate)
-  await createJob({
-    customerId: sarah.id, addressId: sarah.addressId, serviceId: moveOut.id,
-    title: 'Move-out — needs estimate', priceCents: 0,
-    scheduleState: ScheduleState.unscheduled,
-    assigneeId: null, status: JobStatus.open,
-  });
-
-  // 8. Unscheduled job (Downtown — quarterly)
-  await createJob({
-    customerId: downtown.id, addressId: downtown.addressId, serviceId: deepCleaning.id,
-    title: 'Quarterly deep clean estimate', priceCents: 0,
-    scheduleState: ScheduleState.unscheduled,
-    assigneeId: null, status: JobStatus.open,
+    assigneeId: alex.id, stage: JobStage.scheduled,
   });
 
   // ── Recurring series ───────────────────────────────────────────────
 
-  // 9. Weekly recurring for Maria (every Monday, Deep Cleaning, Alex)
+  // 7. Weekly recurring for Maria (every Monday, Deep Cleaning, Alex)
   const recurJob1 = await createJob({
     customerId: maria.id, addressId: maria.addressId, serviceId: deepCleaning.id,
     title: 'Weekly clean — Maria', priceCents: 18000,
-    scheduleState: ScheduleState.scheduled,
     start: dayOffset(getNextDayOfWeek(1), 9), end: dayOffset(getNextDayOfWeek(1), 11),
-    assigneeId: alex.id, status: JobStatus.open,
+    assigneeId: alex.id, stage: JobStage.scheduled,
   });
   await prisma.recurringSeries.create({
     data: {
@@ -208,13 +184,12 @@ async function seedDemo() {
     data: { recurringSeriesId: (await prisma.recurringSeries.findFirst({ where: { sourceJobId: recurJob1.id } }))!.id, occurrenceIndex: 0 },
   });
 
-  // 10. Biweekly recurring for Downtown (every other Wednesday, Window, Jordan)
+  // 8. Biweekly recurring for Downtown (every other Wednesday, Window, Jordan)
   const recurJob2 = await createJob({
     customerId: downtown.id, addressId: downtown.addressId, serviceId: windowCleaning.id,
     title: 'Biweekly windows — Downtown', priceCents: 30000,
-    scheduleState: ScheduleState.scheduled,
     start: dayOffset(getNextDayOfWeek(3), 8), end: dayOffset(getNextDayOfWeek(3), 12),
-    assigneeId: jordan.id, status: JobStatus.open,
+    assigneeId: jordan.id, stage: JobStage.scheduled,
   });
   await prisma.recurringSeries.create({
     data: {
@@ -263,7 +238,7 @@ async function seedDemo() {
     });
   }
 
-  console.log('[seed:demo] ok — 5 customers, 10 jobs, 2 recurring series, 7 events');
+  console.log('[seed:demo] ok — 5 customers, 8 jobs, 2 recurring series, 7 events');
 }
 
 // ── Customer helper ────────────────────────────────────────────────────
@@ -341,11 +316,10 @@ interface JobInput {
   serviceId: string;
   title: string;
   priceCents: number;
-  scheduleState: ScheduleState;
-  start?: Date;
-  end?: Date;
+  start: Date;
+  end: Date;
   assigneeId: string | null;
-  status: JobStatus;
+  stage: JobStage;
   finishedAt?: Date;
 }
 
@@ -360,11 +334,10 @@ async function createJob(input: JobInput) {
       serviceId: input.serviceId,
       titleOrSummary: input.title,
       priceCents: input.priceCents,
-      scheduleState: input.scheduleState,
-      scheduledStartAt: input.start ?? null,
-      scheduledEndAt: input.end ?? null,
+      scheduledStartAt: input.start,
+      scheduledEndAt: input.end,
       assigneeTeamMemberId: input.assigneeId,
-      jobStatus: input.status,
+      jobStage: input.stage,
       finishedAt: input.finishedAt ?? null,
     },
   });

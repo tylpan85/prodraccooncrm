@@ -33,30 +33,13 @@ export const createJobRequestSchema = z
     privateNotes: trimmedNullable(10000),
     tags: z.array(z.string().max(100)).max(50).optional(),
 
-    // Schedule (optional — omit for unscheduled)
-    scheduledStartAt: isoDatetime.nullable().optional(),
-    scheduledEndAt: isoDatetime.nullable().optional(),
+    scheduledStartAt: isoDatetime,
+    scheduledEndAt: isoDatetime,
     assigneeTeamMemberId: z.string().uuid().nullable().optional(),
   })
-  .superRefine((data, ctx) => {
-    const hasStart = data.scheduledStartAt != null;
-    const hasEnd = data.scheduledEndAt != null;
-    if (hasStart !== hasEnd) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: 'Both start and end are required when scheduling',
-        path: [hasStart ? 'scheduledEndAt' : 'scheduledStartAt'],
-      });
-    }
-    if (hasStart && hasEnd && data.scheduledEndAt && data.scheduledStartAt) {
-      if (new Date(data.scheduledEndAt).getTime() <= new Date(data.scheduledStartAt).getTime()) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: 'End must be after start',
-          path: ['scheduledEndAt'],
-        });
-      }
-    }
+  .refine((d) => new Date(d.scheduledEndAt).getTime() > new Date(d.scheduledStartAt).getTime(), {
+    message: 'End must be after start',
+    path: ['scheduledEndAt'],
   });
 
 export type CreateJobRequest = z.infer<typeof createJobRequestSchema>;
@@ -106,8 +89,6 @@ export type AssignJobRequest = z.infer<typeof assignJobRequestSchema>;
 
 export const jobListQuerySchema = z.object({
   customerId: z.string().uuid().optional(),
-  scheduleState: z.enum(['unscheduled', 'scheduled']).optional(),
-  jobStatus: z.enum(['open', 'finished']).optional(),
   assigneeTeamMemberId: z.string().uuid().optional(),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
@@ -135,12 +116,10 @@ export const jobSummaryDtoSchema = z.object({
   customerDisplayName: z.string(),
   titleOrSummary: z.string().nullable(),
   priceCents: z.number(),
-  scheduleState: z.string(),
-  scheduledStartAt: z.string().nullable(),
-  scheduledEndAt: z.string().nullable(),
+  scheduledStartAt: z.string(),
+  scheduledEndAt: z.string(),
   assigneeTeamMemberId: z.string().uuid().nullable(),
   assigneeDisplayName: z.string().nullable(),
-  jobStatus: z.string(),
   jobStage: z.string(),
   finishedAt: z.string().nullable(),
 });
@@ -160,12 +139,10 @@ export const jobDtoSchema = z.object({
   priceCents: z.number(),
   leadSource: z.string().nullable(),
   privateNotes: z.string().nullable(),
-  scheduleState: z.string(),
-  scheduledStartAt: z.string().nullable(),
-  scheduledEndAt: z.string().nullable(),
+  scheduledStartAt: z.string(),
+  scheduledEndAt: z.string(),
   assigneeTeamMemberId: z.string().uuid().nullable(),
   assigneeDisplayName: z.string().nullable(),
-  jobStatus: z.string(),
   jobStage: z.string(),
   finishedAt: z.string().nullable(),
   tags: z.array(z.string()),

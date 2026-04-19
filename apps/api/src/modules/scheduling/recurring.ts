@@ -149,7 +149,6 @@ async function materializeTail(
         priceCents: pivot.priceCents,
         leadSource: pivot.leadSource,
         privateNotes: pivot.privateNotes,
-        scheduleState: 'scheduled',
         scheduledStartAt: startAt,
         scheduledEndAt: endAt,
         assigneeTeamMemberId: pivot.assigneeTeamMemberId,
@@ -238,7 +237,7 @@ export async function recurringRoutes(fastify: FastifyInstance) {
         'Job is already part of a recurring series',
       );
     }
-    if (job.scheduleState !== 'scheduled' || !job.scheduledStartAt || !job.scheduledEndAt) {
+    if (!job.scheduledStartAt || !job.scheduledEndAt) {
       throw new ApiError(
         ERROR_CODES.JOB_NOT_SCHEDULED,
         400,
@@ -350,7 +349,6 @@ export async function recurringRoutes(fastify: FastifyInstance) {
           priceCents: body.job.priceCents ?? 0,
           leadSource: body.job.leadSource ?? null,
           privateNotes: body.job.privateNotes ?? null,
-          scheduleState: 'scheduled',
           scheduledStartAt: new Date(body.schedule.scheduledStartAt),
           scheduledEndAt: new Date(body.schedule.scheduledEndAt),
           assigneeTeamMemberId: body.schedule.assigneeTeamMemberId ?? null,
@@ -450,7 +448,7 @@ export async function recurringRoutes(fastify: FastifyInstance) {
         scheduledStartAt: true,
         scheduledEndAt: true,
         assigneeTeamMemberId: true,
-        jobStatus: true,
+        jobStage: true,
         titleOrSummary: true,
         priceCents: true,
       },
@@ -479,7 +477,7 @@ export async function recurringRoutes(fastify: FastifyInstance) {
           scheduledStartAt: o.scheduledStartAt?.toISOString() ?? null,
           scheduledEndAt: o.scheduledEndAt?.toISOString() ?? null,
           assigneeTeamMemberId: o.assigneeTeamMemberId,
-          jobStatus: o.jobStatus,
+          jobStage: o.jobStage,
           titleOrSummary: o.titleOrSummary,
           priceCents: o.priceCents,
         })),
@@ -545,7 +543,7 @@ export async function recurringRoutes(fastify: FastifyInstance) {
     if (job.deletedFromSeriesAt) {
       throw new ApiError(ERROR_CODES.OCCURRENCE_DELETED, 400, 'Cannot mutate a deleted occurrence');
     }
-    if (job.jobStatus === 'finished' && job.invoice) {
+    if (job.jobStage === 'job_done' && job.invoice) {
       throw new ApiError(
         ERROR_CODES.FINISHED_OCCURRENCE_IMMUTABLE,
         400,
@@ -680,7 +678,6 @@ export async function recurringRoutes(fastify: FastifyInstance) {
           );
           pivotData.scheduledStartAt = newStart;
           pivotData.scheduledEndAt = new Date(newStart.getTime() + durationMs);
-          pivotData.scheduleState = 'scheduled';
         }
       }
 
@@ -910,15 +907,10 @@ function buildJobUpdateData(changes: Record<string, unknown>): Record<string, un
   if (changes.leadSource !== undefined) data.leadSource = changes.leadSource;
   if (changes.privateNotes !== undefined) data.privateNotes = changes.privateNotes;
   if (changes.scheduledStartAt !== undefined) {
-    data.scheduledStartAt = changes.scheduledStartAt
-      ? new Date(changes.scheduledStartAt as string)
-      : null;
-    data.scheduleState = changes.scheduledStartAt ? 'scheduled' : 'unscheduled';
+    data.scheduledStartAt = new Date(changes.scheduledStartAt as string);
   }
   if (changes.scheduledEndAt !== undefined) {
-    data.scheduledEndAt = changes.scheduledEndAt
-      ? new Date(changes.scheduledEndAt as string)
-      : null;
+    data.scheduledEndAt = new Date(changes.scheduledEndAt as string);
   }
   if (changes.assigneeTeamMemberId !== undefined) {
     data.assigneeTeamMemberId = changes.assigneeTeamMemberId;

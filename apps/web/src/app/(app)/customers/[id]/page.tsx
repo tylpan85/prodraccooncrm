@@ -264,7 +264,7 @@ export default function CustomerDetailPage() {
                   <tr>
                     <th className="px-4 py-3 font-medium">Job #</th>
                     <th className="px-4 py-3 font-medium">Title</th>
-                    <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium">Stage</th>
                     <th className="px-4 py-3 font-medium">Schedule</th>
                     <th className="px-4 py-3 font-medium">Assignee</th>
                     <th className="px-4 py-3 font-medium text-right">Price</th>
@@ -285,24 +285,28 @@ export default function CustomerDetailPage() {
                         {j.titleOrSummary ?? '—'}
                       </td>
                       <td className="px-4 py-3 text-sm">
-                        <span
-                          className={`inline-flex rounded px-2 py-0.5 text-xs font-medium capitalize ${
-                            j.jobStatus === 'finished'
-                              ? 'bg-slate-200 text-slate-700'
-                              : 'bg-blue-100 text-blue-800'
-                          }`}
-                        >
-                          {j.jobStatus}
-                        </span>
+                        {(() => {
+                          const STAGE: Record<string, { bg: string; text: string; label: string }> = {
+                            scheduled:         { bg: 'bg-slate-100',   text: 'text-slate-600', label: 'Scheduled' },
+                            confirmation_sent: { bg: 'bg-blue-100',    text: 'text-blue-700',  label: 'Conf. Sent' },
+                            confirmed:         { bg: 'bg-green-100',   text: 'text-green-700', label: 'Confirmed' },
+                            job_done:          { bg: 'bg-emerald-600', text: 'text-white',     label: 'Done' },
+                            cancelled:         { bg: 'bg-red-100',     text: 'text-red-700',   label: 'Cancelled' },
+                          };
+                          const s = STAGE[j.jobStage] ?? { bg: 'bg-slate-100', text: 'text-slate-600', label: j.jobStage };
+                          return (
+                            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${s.bg} ${s.text}`}>
+                              {s.label}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-3 text-sm text-slate-700">
-                        {j.scheduleState === 'scheduled'
-                          ? new Date(j.scheduledStartAt!).toLocaleDateString('en-US', {
+                        {new Date(j.scheduledStartAt).toLocaleDateString('en-US', {
                               month: 'short',
                               day: 'numeric',
                               timeZone: 'UTC',
-                            })
-                          : 'Unscheduled'}
+                            })}
                       </td>
                       <td className="px-4 py-3 text-sm text-slate-700">
                         {j.assigneeDisplayName ?? '—'}

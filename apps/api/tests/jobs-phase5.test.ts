@@ -137,7 +137,7 @@ beforeAll(async () => {
 // ── Tests ─��───────────────────────────────────────────────────────────────
 
 describe('POST /api/customers/:customerId/jobs', () => {
-  it('creates an unscheduled job', async () => {
+  it('creates a job', async () => {
     const access = await login();
     const res = await app.inject({
       method: 'POST',
@@ -147,14 +147,15 @@ describe('POST /api/customers/:customerId/jobs', () => {
         customerAddressId: fixtureAddressId,
         titleOrSummary: 'Test cleaning',
         priceCents: 15000,
+        scheduledStartAt: '2026-05-10T09:00:00.000Z',
+        scheduledEndAt: '2026-05-10T11:00:00.000Z',
         tags: ['vip'],
       },
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
     expect(body.item.jobNumber).toMatch(/^J-\d+$/);
-    expect(body.item.scheduleState).toBe('unscheduled');
-    expect(body.item.jobStatus).toBe('open');
+    expect(body.item.jobStage).toBe('scheduled');
     expect(body.item.priceCents).toBe(15000);
     expect(body.item.tags).toEqual(['vip']);
   });
@@ -179,7 +180,6 @@ describe('POST /api/customers/:customerId/jobs', () => {
     });
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.body);
-    expect(body.item.scheduleState).toBe('scheduled');
     expect(body.item.scheduledStartAt).toBe(start);
     expect(body.item.assigneeTeamMemberId).toBe(tmId);
   });
@@ -199,20 +199,6 @@ describe('POST /api/customers/:customerId/jobs', () => {
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.body);
     expect(body.error.code).toBe('DO_NOT_SERVICE_BLOCK');
-  });
-
-  it('allows unscheduled job for DNS customer', async () => {
-    const access = await login();
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/customers/${fixtureDnsCustomerId}/jobs`,
-      cookies: { oc_access: access },
-      payload: {
-        customerAddressId: fixtureDnsAddressId,
-        titleOrSummary: 'DNS unscheduled OK',
-      },
-    });
-    expect(res.statusCode).toBe(201);
   });
 
   it('rejects address not owned by customer', async () => {
@@ -239,6 +225,8 @@ describe('POST /api/customers/:customerId/jobs', () => {
       cookies: { oc_access: access },
       payload: {
         customerAddressId: fixtureAddressId,
+        scheduledStartAt: '2026-05-01T09:00:00.000Z',
+        scheduledEndAt: '2026-05-01T11:00:00.000Z',
         assigneeTeamMemberId: inactiveTm,
       },
     });
@@ -270,7 +258,7 @@ describe('job lifecycle (schedule/assign/finish/reopen)', () => {
     const access = await login();
     const tmId = await getActiveTeamMember();
 
-    // Create unscheduled
+    // Create job
     const createRes = await app.inject({
       method: 'POST',
       url: `/api/customers/${fixtureCustomerId}/jobs`,
@@ -279,23 +267,24 @@ describe('job lifecycle (schedule/assign/finish/reopen)', () => {
         customerAddressId: fixtureAddressId,
         titleOrSummary: 'Lifecycle test',
         priceCents: 5000,
+        scheduledStartAt: '2026-06-01T09:00:00.000Z',
+        scheduledEndAt: '2026-06-01T11:00:00.000Z',
       },
     });
     expect(createRes.statusCode).toBe(201);
     jobId = JSON.parse(createRes.body).item.id;
 
-    // Schedule
+    // Reschedule
     const schedRes = await app.inject({
       method: 'POST',
       url: `/api/jobs/${jobId}/schedule`,
       cookies: { oc_access: access },
       payload: {
-        scheduledStartAt: '2026-06-01T09:00:00.000Z',
-        scheduledEndAt: '2026-06-01T11:00:00.000Z',
+        scheduledStartAt: '2026-06-02T09:00:00.000Z',
+        scheduledEndAt: '2026-06-02T11:00:00.000Z',
       },
     });
     expect(schedRes.statusCode).toBe(200);
-    expect(JSON.parse(schedRes.body).item.scheduleState).toBe('scheduled');
 
     // Assign
     const assignRes = await app.inject({
@@ -315,7 +304,7 @@ describe('job lifecycle (schedule/assign/finish/reopen)', () => {
     });
     expect(finishRes.statusCode).toBe(200);
     const finishBody = JSON.parse(finishRes.body);
-    expect(finishBody.item.jobStatus).toBe('finished');
+    expect(finishBody.item.jobStage).toBe('job_done');
     expect(finishBody.item.invoice).toBeTruthy();
     expect(finishBody.item.invoice.status).toBe('draft');
     expect(finishBody.item.invoice.totalCents).toBe(5000);
@@ -328,7 +317,7 @@ describe('job lifecycle (schedule/assign/finish/reopen)', () => {
       cookies: { oc_access: access },
     });
     expect(reopenRes.statusCode).toBe(200);
-    expect(JSON.parse(reopenRes.body).item.jobStatus).toBe('open');
+    expect(JSON.parse(reopenRes.body).item.jobStage).toBe('confirmed');
     expect(JSON.parse(reopenRes.body).item.invoice).toBeNull();
   });
 
@@ -344,6 +333,8 @@ describe('job lifecycle (schedule/assign/finish/reopen)', () => {
         customerAddressId: fixtureAddressId,
         titleOrSummary: 'Sent invoice test',
         priceCents: 3000,
+        scheduledStartAt: '2026-06-10T09:00:00.000Z',
+        scheduledEndAt: '2026-06-10T11:00:00.000Z',
       },
     });
     const jId = JSON.parse(createRes.body).item.id;
@@ -373,7 +364,7 @@ describe('job lifecycle (schedule/assign/finish/reopen)', () => {
 });
 
 describe('job actions', () => {
-  it('unschedule clears times but preserves assignee', async () => {
+  it('unassign clears team member', async () => {
     const access = await login();
     const tmId = await getActiveTeamMember();
 
@@ -385,33 +376,6 @@ describe('job actions', () => {
         customerAddressId: fixtureAddressId,
         scheduledStartAt: '2026-07-01T10:00:00.000Z',
         scheduledEndAt: '2026-07-01T12:00:00.000Z',
-        assigneeTeamMemberId: tmId,
-      },
-    });
-    const jId = JSON.parse(createRes.body).item.id;
-
-    const unschedRes = await app.inject({
-      method: 'POST',
-      url: `/api/jobs/${jId}/unschedule`,
-      cookies: { oc_access: access },
-    });
-    expect(unschedRes.statusCode).toBe(200);
-    const job = JSON.parse(unschedRes.body).item;
-    expect(job.scheduleState).toBe('unscheduled');
-    expect(job.scheduledStartAt).toBeNull();
-    expect(job.assigneeTeamMemberId).toBe(tmId);
-  });
-
-  it('unassign clears team member', async () => {
-    const access = await login();
-    const tmId = await getActiveTeamMember();
-
-    const createRes = await app.inject({
-      method: 'POST',
-      url: `/api/customers/${fixtureCustomerId}/jobs`,
-      cookies: { oc_access: access },
-      payload: {
-        customerAddressId: fixtureAddressId,
         assigneeTeamMemberId: tmId,
       },
     });
@@ -452,7 +416,6 @@ describe('job actions', () => {
     const job = JSON.parse(patchRes.body).item;
     expect(job.titleOrSummary).toBe('Updated');
     expect(job.tags).toEqual(['rush']);
-    expect(job.scheduleState).toBe('scheduled');
   });
 });
 

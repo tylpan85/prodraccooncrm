@@ -121,7 +121,8 @@ async function createJobFixture(serviceId?: string, assigneeTeamMemberId?: strin
       customerAddressId: address.id,
       serviceId,
       assigneeTeamMemberId,
-      scheduleState: 'unscheduled',
+      scheduledStartAt: new Date('2026-06-01T09:00:00.000Z'),
+      scheduledEndAt: new Date('2026-06-01T11:00:00.000Z'),
       titleOrSummary: 'Phase 3 fixture',
     },
   });

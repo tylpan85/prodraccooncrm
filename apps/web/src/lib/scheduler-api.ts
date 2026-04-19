@@ -19,7 +19,6 @@ export interface JobBlock {
   priceCents: number;
   scheduledStartAt: string;
   scheduledEndAt: string;
-  jobStatus: string;
   jobStage: string;
   assigneeTeamMemberId: string | null;
   recurringSeriesId: string | null;

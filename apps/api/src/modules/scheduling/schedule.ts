@@ -36,7 +36,6 @@ interface JobBlock {
   priceCents: number;
   scheduledStartAt: string;
   scheduledEndAt: string;
-  jobStatus: string;
   jobStage: string;
   assigneeTeamMemberId: string | null;
   recurringSeriesId: string | null;
@@ -81,7 +80,6 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
     const jobs = await prisma.job.findMany({
       where: {
         organizationId: orgId,
-        scheduleState: 'scheduled',
         scheduledStartAt: { lte: dayEnd },
         scheduledEndAt: { gte: dayStart },
         deletedFromSeriesAt: null,
@@ -158,7 +156,6 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         priceCents: j.priceCents,
         scheduledStartAt: j.scheduledStartAt!.toISOString(),
         scheduledEndAt: j.scheduledEndAt!.toISOString(),
-        jobStatus: j.jobStatus,
         jobStage: j.jobStage,
         assigneeTeamMemberId: j.assigneeTeamMemberId,
         recurringSeriesId: j.recurringSeriesId,
@@ -231,7 +228,6 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
     const jobs = await prisma.job.findMany({
       where: {
         organizationId: orgId,
-        scheduleState: 'scheduled',
         scheduledStartAt: { lte: rangeEnd },
         scheduledEndAt: { gte: rangeStart },
         deletedFromSeriesAt: null,
@@ -295,7 +291,6 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
         priceCents: j.priceCents,
         scheduledStartAt: j.scheduledStartAt!.toISOString(),
         scheduledEndAt: j.scheduledEndAt!.toISOString(),
-        jobStatus: j.jobStatus,
         jobStage: j.jobStage,
         assigneeTeamMemberId: j.assigneeTeamMemberId,
         recurringSeriesId: j.recurringSeriesId,

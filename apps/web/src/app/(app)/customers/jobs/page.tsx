@@ -53,7 +53,6 @@ export default function JobsPage() {
                 <th className="px-4 py-3 font-medium">Job #</th>
                 <th className="px-4 py-3 font-medium">Customer</th>
                 <th className="px-4 py-3 font-medium">Title</th>
-                <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3 font-medium">Stage</th>
                 <th className="px-4 py-3 font-medium">Schedule</th>
                 <th className="px-4 py-3 font-medium">Assignee</th>
@@ -78,33 +77,20 @@ export default function JobsPage() {
                   </td>
                   <td className="px-4 py-3 text-sm text-slate-700">{j.titleOrSummary ?? '—'}</td>
                   <td className="px-4 py-3 text-sm">
-                    <span
-                      className={`inline-flex rounded px-2 py-0.5 text-xs font-medium capitalize ${
-                        j.jobStatus === 'finished'
-                          ? 'bg-slate-200 text-slate-700'
-                          : 'bg-blue-100 text-blue-800'
-                      }`}
-                    >
-                      {j.jobStatus}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-sm">
                     {(() => {
                       const s = STAGE_STYLES[j.jobStage] ?? { bg: 'bg-slate-100', text: 'text-slate-600', label: 'Scheduled' };
                       return (
-                        <span className={`inline-flex rounded px-2 py-0.5 text-xs font-semibold ${s.bg} ${s.text}`}>
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${s.bg} ${s.text}`}>
                           {s.label}
                         </span>
                       );
                     })()}
                   </td>
                   <td className="px-4 py-3 text-sm text-slate-700">
-                    {j.scheduleState === 'scheduled' && j.scheduledStartAt
-                      ? new Date(j.scheduledStartAt).toLocaleDateString('en-US', {
+                    {new Date(j.scheduledStartAt).toLocaleDateString('en-US', {
                           month: 'short',
                           day: 'numeric',
-                        })
-                      : 'Unscheduled'}
+                        })}
                   </td>
                   <td className="px-4 py-3 text-sm text-slate-700">
                     {j.assigneeDisplayName ?? '—'}

@@ -137,8 +137,8 @@ const STAGE_STYLES: Record<string, { bg: string; text: string; label: string }> 
 function StageBadge({ stage, size = 'sm' }: { stage: string; size?: 'xs' | 'sm' }) {
   const s = STAGE_STYLES[stage] ?? { bg: 'bg-slate-200', text: 'text-slate-700', label: 'Scheduled' };
   const cls = size === 'xs'
-    ? 'rounded px-1 py-px text-[9px] font-semibold'
-    : 'rounded px-1.5 py-px text-[10px] font-semibold';
+    ? 'rounded-full px-1.5 py-px text-[9px] font-semibold'
+    : 'rounded-full px-2 py-px text-[10px] font-semibold';
   return (
     <span className={`${cls} ${s.bg} ${s.text}`}>{s.label}</span>
   );
@@ -1219,7 +1219,7 @@ function DayView({
                     }}
                     className={cn(
                       'absolute cursor-grab overflow-hidden rounded px-2 py-1 text-left text-xs shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing border',
-                      job.jobStatus === 'finished'
+                      job.jobStage === 'job_done'
                         ? 'bg-slate-100 text-slate-600 border-slate-200'
                         : '',
                       isDragging && 'opacity-50',
@@ -1230,7 +1230,7 @@ function DayView({
                       left: `calc(${leftPct}% + 2px)`,
                       width: `calc(${colWidthPct}% - 4px)`,
                       zIndex: 5,
-                      ...(job.jobStatus !== 'finished' && {
+                      ...(job.jobStage !== 'job_done' && {
                         backgroundColor: lane.color + '22',
                         borderColor: lane.color + '88',
                         color: lane.color,
@@ -1280,7 +1280,7 @@ function DayView({
                         ))}
                       </div>
                     )}
-                    {job.jobStage && job.jobStage !== 'scheduled' && (
+                    {job.jobStage && (
                       <div className="mt-0.5">
                         <StageBadge stage={job.jobStage} size="xs" />
                       </div>
@@ -1491,7 +1491,7 @@ function MonthView({
                         ))}
                       </span>
                     )}
-                    {j.jobStage && j.jobStage !== 'scheduled' && (
+                    {j.jobStage && (
                       <span className="mt-0.5 block">
                         <StageBadge stage={j.jobStage} size="xs" />
                       </span>
@@ -1565,6 +1565,7 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
   const queryClient = useQueryClient();
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showCancelScopeDialog, setShowCancelScopeDialog] = useState(false);
+  const [showReopenConfirm, setShowReopenConfirm] = useState(false);
   const jobQuery = useQuery({
     queryKey: ['job', jobId],
     queryFn: () => jobsApi.get(jobId),
@@ -1579,11 +1580,6 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
 
   const reopenMutation = useMutation({
     mutationFn: () => jobsApi.reopen(jobId),
-    onSuccess: () => invalidate(),
-  });
-
-  const unscheduleMutation = useMutation({
-    mutationFn: () => jobsApi.unschedule(jobId),
     onSuccess: () => invalidate(),
   });
 
@@ -1613,9 +1609,19 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
 
   const job = jobQuery.data as JobDto;
 
-  const statusColor: Record<string, string> = {
-    open: 'bg-blue-100 text-blue-800',
-    finished: 'bg-slate-200 text-slate-700',
+  const stageColor: Record<string, string> = {
+    scheduled: 'bg-slate-100 text-slate-700',
+    confirmation_sent: 'bg-blue-100 text-blue-700',
+    confirmed: 'bg-green-100 text-green-700',
+    job_done: 'bg-emerald-600 text-white',
+    cancelled: 'bg-red-100 text-red-700',
+  };
+  const stageLabel: Record<string, string> = {
+    scheduled: 'Scheduled',
+    confirmation_sent: 'Conf. Sent',
+    confirmed: 'Confirmed',
+    job_done: 'Done',
+    cancelled: 'Cancelled',
   };
 
   return (
@@ -1625,9 +1631,9 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
           <div className="flex items-center gap-2">
             <h2 className="text-lg font-semibold text-slate-900">{job.jobNumber}</h2>
             <span
-              className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium capitalize ${statusColor[job.jobStatus] ?? 'bg-slate-100 text-slate-700'}`}
+              className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-medium ${stageColor[job.jobStage] ?? 'bg-slate-100 text-slate-700'}`}
             >
-              {job.jobStatus}
+              {stageLabel[job.jobStage] ?? job.jobStage}
             </span>
           </div>
           <Link
@@ -1652,11 +1658,7 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
         <DetailRow label="Lead source" value={job.leadSource ?? '—'} />
         <DetailRow
           label="Schedule"
-          value={
-            job.scheduleState === 'scheduled' && job.scheduledStartAt && job.scheduledEndAt
-              ? formatScheduleRange(job.scheduledStartAt, job.scheduledEndAt)
-              : 'Unscheduled'
-          }
+          value={formatScheduleRange(job.scheduledStartAt, job.scheduledEndAt)}
         />
         <DetailRow label="Assignee" value={job.assigneeDisplayName ?? 'Unassigned'} />
       </dl>
@@ -1680,29 +1682,43 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
 
       <div className="mt-4">
         <p className="mb-1.5 text-xs font-medium text-slate-500">Stage</p>
-        <div className="flex flex-wrap gap-1.5">
-          {SLIDE_STAGE_OPTIONS.map((opt) => {
-            const isActive = job.jobStage === opt.value;
-            return (
-              <button
-                key={opt.value}
-                type="button"
-                disabled={stageMutation.isPending}
-                className={`rounded px-2.5 py-1 text-xs font-semibold transition-all ${opt.bg} ${opt.text} ${isActive ? 'ring-2 ring-offset-1 ring-slate-400' : 'opacity-70 hover:opacity-100'}`}
-                onClick={() => {
-                  if (isActive) return;
-                  if (opt.value === 'cancelled' && job.recurringSeriesId) {
-                    setShowCancelScopeDialog(true);
-                  } else {
-                    stageMutation.mutate({ stage: opt.value });
-                  }
-                }}
-              >
-                {opt.label}
-              </button>
-            );
-          })}
-        </div>
+        {job.jobStage === 'job_done' ? (
+          <div className="flex items-center gap-2">
+            {(() => {
+              const opt = SLIDE_STAGE_OPTIONS.find((o) => o.value === 'job_done')!;
+              return (
+                <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${opt.bg} ${opt.text}`}>
+                  {opt.label}
+                </span>
+              );
+            })()}
+            <span className="text-xs text-slate-400">Use Reopen to change</span>
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {SLIDE_STAGE_OPTIONS.map((opt) => {
+              const isActive = job.jobStage === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={stageMutation.isPending}
+                  className={`rounded-full px-2.5 py-1 text-xs font-semibold transition-all ${opt.bg} ${opt.text} ${isActive ? 'ring-2 ring-offset-1 ring-slate-400' : 'opacity-70 hover:opacity-100'}`}
+                  onClick={() => {
+                    if (isActive) return;
+                    if (opt.value === 'cancelled' && job.recurringSeriesId) {
+                      setShowCancelScopeDialog(true);
+                    } else {
+                      stageMutation.mutate({ stage: opt.value });
+                    }
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="mt-6 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
@@ -1716,24 +1732,14 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
             Full detail
           </Button>
         </Link>
-        {job.jobStatus === 'finished' && job.invoice?.status === 'draft' && (
+        {job.jobStage === 'job_done' && (
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => reopenMutation.mutate()}
+            onClick={() => setShowReopenConfirm(true)}
             disabled={reopenMutation.isPending}
           >
             {reopenMutation.isPending ? 'Reopening…' : 'Reopen'}
-          </Button>
-        )}
-        {job.scheduleState === 'scheduled' && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => unscheduleMutation.mutate()}
-            disabled={unscheduleMutation.isPending}
-          >
-            Unschedule
           </Button>
         )}
         <Button
@@ -1745,6 +1751,35 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
           Delete
         </Button>
       </div>
+
+      {showReopenConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
+            <p className="text-sm text-slate-800">
+              Ви впевнені що хочете повторно відкрити цю роботу?
+            </p>
+            <div className="mt-4 flex flex-col gap-2">
+              <Button
+                variant="primary"
+                onClick={() => {
+                  reopenMutation.mutate();
+                  setShowReopenConfirm(false);
+                }}
+                disabled={reopenMutation.isPending}
+              >
+                {reopenMutation.isPending ? 'Reopening…' : 'Reopen'}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => setShowReopenConfirm(false)}
+                disabled={reopenMutation.isPending}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showCancelScopeDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">

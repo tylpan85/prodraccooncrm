@@ -58,6 +58,7 @@ export default function JobDetailPage() {
   const [showAssignDialog, setShowAssignDialog] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showCancelScopeDialog, setShowCancelScopeDialog] = useState(false);
+  const [showReopenDialog, setShowReopenDialog] = useState(false);
 
   function invalidate() {
     queryClient.invalidateQueries({ queryKey: ['job', id] });
@@ -89,11 +90,6 @@ export default function JobDetailPage() {
     mutationFn: () => jobsApi.reopen(id),
     onSuccess: () => invalidate(),
     onError: (err) => setError(err instanceof ApiClientError ? err.message : 'Failed'),
-  });
-
-  const unscheduleMutation = useMutation({
-    mutationFn: () => jobsApi.unschedule(id),
-    onSuccess: () => invalidate(),
   });
 
   const unassignMutation = useMutation({
@@ -133,13 +129,9 @@ export default function JobDetailPage() {
     (t) => t.activeOnSchedule,
   );
 
-  const statusLabel =
-    job.scheduleState === 'scheduled' ? 'Scheduled' : job.jobStatus === 'open' ? 'Unscheduled' : job.jobStatus;
+  const statusLabel = 'Scheduled';
   const statusColor: Record<string, string> = {
     Scheduled: 'bg-green-100 text-green-800',
-    Unscheduled: 'bg-yellow-100 text-yellow-800',
-    open: 'bg-blue-100 text-blue-800',
-    finished: 'bg-slate-200 text-slate-700',
   };
 
   return (
@@ -162,7 +154,7 @@ export default function JobDetailPage() {
               const opt = STAGE_OPTIONS.find((o) => o.value === (job.jobStage ?? 'scheduled'));
               if (!opt) return null;
               return (
-                <span className={`inline-flex items-center rounded px-2 py-0.5 text-xs font-semibold ${opt.bg} ${opt.text}`}>
+                <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${opt.bg} ${opt.text}`}>
                   {opt.label}
                 </span>
               );
@@ -181,6 +173,14 @@ export default function JobDetailPage() {
           <Link href={`/jobs/${job.id}/edit` as Route}>
             <Button variant="secondary">Edit</Button>
           </Link>
+          {job.jobStage === 'job_done' && (
+            <Button
+              variant="secondary"
+              onClick={() => setShowReopenDialog(true)}
+            >
+              Reopen
+            </Button>
+          )}
           <Button
             variant="ghost"
             className="text-red-600 hover:bg-red-50 hover:text-red-700"
@@ -203,10 +203,7 @@ export default function JobDetailPage() {
 
         <Card title="Schedule">
           <dl className="space-y-2 text-sm">
-            <Row
-              label="Status"
-              value={job.scheduleState === 'scheduled' ? 'Scheduled' : 'Unscheduled'}
-            />
+            <Row label="Status" value="Scheduled" />
             <Row label="Start" value={formatDate(job.scheduledStartAt)} />
             <Row label="End" value={formatDate(job.scheduledEndAt)} />
             <Row label="Assignee" value={job.assigneeDisplayName ?? 'Unassigned'} />
@@ -218,19 +215,8 @@ export default function JobDetailPage() {
               size="sm"
               onClick={() => setShowScheduleDialog(true)}
             >
-              {job.scheduleState === 'scheduled' ? 'Reschedule' : 'Schedule'}
+              Reschedule
             </Button>
-            {job.scheduleState === 'scheduled' && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => unscheduleMutation.mutate()}
-                disabled={unscheduleMutation.isPending}
-              >
-                Unschedule
-              </Button>
-            )}
             <Button
               type="button"
               variant="secondary"
@@ -287,31 +273,45 @@ export default function JobDetailPage() {
 
         {/* Stage */}
         <Card title="Stage">
-          <div className="flex flex-wrap gap-2">
-            {STAGE_OPTIONS.map((opt) => {
-              const active = (job.jobStage ?? 'scheduled') === opt.value;
-              return (
-                <button
-                  key={opt.value}
-                  type="button"
-                  disabled={stageMutation.isPending}
-                  onClick={() => {
-                    if (active) return;
-                    if (opt.value === 'cancelled' && job.recurringSeriesId) {
-                      setShowCancelScopeDialog(true);
-                    } else {
-                      stageMutation.mutate({ stage: opt.value });
-                    }
-                  }}
-                  className={`rounded px-3 py-1.5 text-sm font-semibold transition-opacity ${opt.bg} ${opt.text} ${
-                    active ? 'ring-2 ring-offset-1 ring-slate-400 opacity-100' : 'opacity-50 hover:opacity-80'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              );
-            })}
-          </div>
+          {job.jobStage === 'job_done' ? (
+            <div className="flex items-center gap-3">
+              {(() => {
+                const opt = STAGE_OPTIONS.find((o) => o.value === 'job_done')!;
+                return (
+                  <span className={`rounded-full px-3 py-1.5 text-sm font-semibold ${opt.bg} ${opt.text}`}>
+                    {opt.label}
+                  </span>
+                );
+              })()}
+              <span className="text-xs text-slate-400">Use Reopen to change stage</span>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {STAGE_OPTIONS.map((opt) => {
+                const active = (job.jobStage ?? 'scheduled') === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    disabled={stageMutation.isPending}
+                    onClick={() => {
+                      if (active) return;
+                      if (opt.value === 'cancelled' && job.recurringSeriesId) {
+                        setShowCancelScopeDialog(true);
+                      } else {
+                        stageMutation.mutate({ stage: opt.value });
+                      }
+                    }}
+                    className={`rounded-full px-3 py-1.5 text-sm font-semibold transition-opacity ${opt.bg} ${opt.text} ${
+                      active ? 'ring-2 ring-offset-1 ring-slate-400 opacity-100' : 'opacity-50 hover:opacity-80'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </Card>
       </div>
 
@@ -443,6 +443,37 @@ export default function JobDetailPage() {
                 </div>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Reopen confirmation dialog */}
+      {showReopenDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+          <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900">Reopen job</h3>
+            <p className="mt-2 text-sm text-slate-600">
+              Ви впевнені що хочете повторно відкрити цю роботу?
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => setShowReopenDialog(false)}
+                disabled={reopenMutation.isPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => {
+                  reopenMutation.mutate(undefined, {
+                    onSuccess: () => setShowReopenDialog(false),
+                  });
+                }}
+                disabled={reopenMutation.isPending}
+              >
+                {reopenMutation.isPending ? 'Reopening…' : 'Reopen'}
+              </Button>
+            </div>
           </div>
         </div>
       )}

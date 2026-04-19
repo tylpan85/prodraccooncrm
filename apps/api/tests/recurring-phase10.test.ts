@@ -562,35 +562,4 @@ describe('Recurring Phase 10', () => {
     expect(body.item).toHaveProperty('generated');
   });
 
-  // ── Reject on unscheduled job ─────────────────────────────────────
-
-  it('cannot attach recurrence to unscheduled job', async () => {
-    const access = await login();
-    // Create unscheduled job
-    const jobRes = await app.inject({
-      method: 'POST',
-      url: `/api/customers/${customerId}/jobs`,
-      cookies: { oc_access: access },
-      payload: {
-        customerAddressId: addressId,
-        titleOrSummary: 'Unscheduled job',
-        priceCents: 1000,
-      },
-    });
-    const jobId = JSON.parse(jobRes.payload).item.id;
-
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/jobs/${jobId}/recurrence`,
-      cookies: { oc_access: access },
-      payload: {
-        recurrenceFrequency: 'daily',
-        recurrenceInterval: 1,
-        recurrenceEndMode: 'after_n_occurrences',
-        recurrenceOccurrenceCount: 3,
-      },
-    });
-    expect(res.statusCode).toBe(400);
-    expect(JSON.parse(res.payload).error.code).toBe('JOB_NOT_SCHEDULED');
-  });
 });

@@ -181,7 +181,6 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
       where: { id: jobId, organizationId: orgId },
       select: {
         id: true,
-        jobStatus: true,
         customerId: true,
         titleOrSummary: true,
         priceCents: true,

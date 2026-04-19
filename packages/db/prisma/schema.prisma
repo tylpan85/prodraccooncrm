@@ -30,16 +30,6 @@ enum PhoneType {
   other
 }
 
-enum ScheduleState {
-  unscheduled
-  scheduled
-}
-
-enum JobStatus {
-  open
-  finished
-}
-
 enum JobStage {
   scheduled
   confirmation_sent
@@ -327,11 +317,9 @@ model Job {
   priceCents               Int           @default(0) @map("price_cents")
   leadSource               String?       @map("lead_source")
   privateNotes             String?       @map("private_notes")
-  scheduleState            ScheduleState @map("schedule_state")
-  scheduledStartAt         DateTime?     @map("scheduled_start_at") @db.Timestamptz(6)
-  scheduledEndAt           DateTime?     @map("scheduled_end_at") @db.Timestamptz(6)
+  scheduledStartAt         DateTime      @map("scheduled_start_at") @db.Timestamptz(6)
+  scheduledEndAt           DateTime      @map("scheduled_end_at") @db.Timestamptz(6)
   assigneeTeamMemberId     String?       @map("assignee_team_member_id") @db.Uuid
-  jobStatus                JobStatus     @default(open) @map("job_status")
   jobStage                 JobStage      @default(scheduled) @map("job_stage")
   finishedAt               DateTime?     @map("finished_at") @db.Timestamptz(6)
   recurringSeriesId        String?       @map("recurring_series_id") @db.Uuid
@@ -353,7 +341,7 @@ model Job {
   invoice         Invoice?
 
   @@unique([organizationId, jobNumber])
-  @@index([organizationId, scheduleState, scheduledStartAt])
+  @@index([organizationId, scheduledStartAt])
   @@index([organizationId, customerId])
   @@index([organizationId, assigneeTeamMemberId, scheduledStartAt])
   @@index([recurringSeriesId, occurrenceIndex])
