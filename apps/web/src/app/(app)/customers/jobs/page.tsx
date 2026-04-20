@@ -4,6 +4,7 @@ import type { JobSummaryDto } from '@openclaw/shared';
 import { useQuery } from '@tanstack/react-query';
 import type { Route } from 'next';
 import Link from 'next/link';
+import { useEffect, useRef } from 'react';
 import { TableSkeleton } from '../../../../components/ui/skeleton';
 import { jobsApi } from '../../../../lib/jobs-api';
 
@@ -15,13 +16,53 @@ const STAGE_STYLES: Record<string, { bg: string; text: string; label: string }> 
   cancelled:         { bg: 'bg-red-100',     text: 'text-red-700',   label: 'Cancelled' },
 };
 
+function fmtHour(d: Date): string {
+  const h = d.getUTCHours();
+  const m = d.getUTCMinutes();
+  const suffix = h >= 12 ? 'pm' : 'am';
+  const h12 = h % 12 || 12;
+  return m === 0 ? `${h12}${suffix}` : `${h12}:${String(m).padStart(2, '0')}${suffix}`;
+}
+
+function formatSchedule(startIso: string, endIso: string): string {
+  const start = new Date(startIso);
+  const end = new Date(endIso);
+  const month = start.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
+  const day = start.getUTCDate();
+  const year = start.getUTCFullYear();
+  return `${month} ${day} ${year} ${fmtHour(start)}–${fmtHour(end)}`;
+}
+
+const TODAY_LINE = (
+  <div className="flex items-center gap-2 px-4 py-1">
+    <div className="h-px flex-1 bg-red-400" />
+    <span className="whitespace-nowrap text-xs font-medium text-red-500">Today</span>
+    <div className="h-px flex-1 bg-red-400" />
+  </div>
+);
+
 export default function JobsPage() {
   const jobsQuery = useQuery({
     queryKey: ['jobs'],
-    queryFn: () => jobsApi.list({ limit: 50 }),
+    queryFn: () => jobsApi.list({ limit: 2000 }),
   });
 
-  const items: JobSummaryDto[] = jobsQuery.data?.items ?? [];
+  const todayLineRef = useRef<HTMLTableRowElement>(null);
+
+  const items: JobSummaryDto[] = [...(jobsQuery.data?.items ?? [])].sort(
+    (a, b) => new Date(a.scheduledStartAt).getTime() - new Date(b.scheduledStartAt).getTime(),
+  );
+
+  const todayMs = new Date().setHours(0, 0, 0, 0);
+  const todayLineIndex = items.findIndex(
+    (j) => new Date(j.scheduledStartAt).getTime() >= todayMs,
+  );
+
+  useEffect(() => {
+    if (todayLineRef.current) {
+      todayLineRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [jobsQuery.data]);
 
   return (
     <div className="px-6 py-8">
@@ -60,46 +101,50 @@ export default function JobsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
-              {items.map((j) => (
-                <tr key={j.id} className="hover:bg-slate-50">
-                  <td className="px-4 py-3 text-sm font-medium text-slate-900">
-                    <Link
-                      href={`/jobs/${j.id}` as Route}
-                      className="text-brand-700 hover:underline"
-                    >
-                      {j.jobNumber}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-slate-700">
-                    <Link href={`/customers/${j.customerId}` as Route} className="hover:underline">
-                      {j.customerDisplayName}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-slate-700">{j.titleOrSummary ?? '—'}</td>
-                  <td className="px-4 py-3 text-sm">
-                    {(() => {
-                      const s = STAGE_STYLES[j.jobStage] ?? { bg: 'bg-slate-100', text: 'text-slate-600', label: 'Scheduled' };
-                      return (
-                        <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${s.bg} ${s.text}`}>
-                          {s.label}
-                        </span>
-                      );
-                    })()}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-slate-700">
-                    {new Date(j.scheduledStartAt).toLocaleDateString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                        })}
-                  </td>
-                  <td className="px-4 py-3 text-sm text-slate-700">
-                    {j.assigneeDisplayName ?? '—'}
-                  </td>
-                  <td className="px-4 py-3 text-right text-sm text-slate-700">
-                    ${(j.priceCents / 100).toFixed(2)}
-                  </td>
+              {items.flatMap((j, idx) => {
+                const s = STAGE_STYLES[j.jobStage] ?? { bg: 'bg-slate-100', text: 'text-slate-600', label: j.jobStage };
+                const row = (
+                  <tr key={j.id} className="hover:bg-slate-50">
+                    <td className="px-4 py-3 text-sm font-medium text-slate-900">
+                      <Link href={`/jobs/${j.id}` as Route} className="text-brand-700 hover:underline">
+                        {j.jobNumber}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-700">
+                      <Link href={`/customers/${j.customerId}` as Route} className="hover:underline">
+                        {j.customerDisplayName}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-700">{j.titleOrSummary ?? '—'}</td>
+                    <td className="px-4 py-3 text-sm">
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${s.bg} ${s.text}`}>
+                        {s.label}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-700">
+                      {formatSchedule(j.scheduledStartAt, j.scheduledEndAt)}
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-700">{j.assigneeDisplayName ?? '—'}</td>
+                    <td className="px-4 py-3 text-right text-sm text-slate-700">
+                      ${(j.priceCents / 100).toFixed(2)}
+                    </td>
+                  </tr>
+                );
+                if (idx === todayLineIndex) {
+                  return [
+                    <tr key="today-line" ref={todayLineRef}>
+                      <td colSpan={7} className="px-0 py-0">{TODAY_LINE}</td>
+                    </tr>,
+                    row,
+                  ];
+                }
+                return [row];
+              })}
+              {todayLineIndex === -1 && items.length > 0 && (
+                <tr ref={todayLineRef}>
+                  <td colSpan={7} className="px-0 py-0">{TODAY_LINE}</td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>

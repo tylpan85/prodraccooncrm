@@ -8,6 +8,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Repeat2 } from 'lucide-react';
 import { Button } from '../../../components/ui/button';
+import { ApiClientError } from '../../../lib/api-client';
 import { cn } from '../../../lib/cn';
 import { eventsApi } from '../../../lib/events-api';
 import { jobsApi } from '../../../lib/jobs-api';
@@ -940,7 +941,7 @@ function DayView({
     const rect = e.currentTarget.getBoundingClientRect();
     const offsetY = e.clientY - rect.top;
     const droppedHour = MIN_HOUR + offsetY / HOUR_HEIGHT;
-    const snappedHour = Math.round(droppedHour * 2) / 2;
+    const snappedHour = Math.round(droppedHour * 4) / 4;
 
     const durationMs =
       new Date(payload.originalEndIso).getTime() - new Date(payload.originalStartIso).getTime();
@@ -1142,7 +1143,7 @@ function DayView({
                 const rect = e.currentTarget.getBoundingClientRect();
                 const offsetY = e.clientY - rect.top;
                 const droppedHour = MIN_HOUR + offsetY / HOUR_HEIGHT;
-                const snappedHour = Math.min(Math.max(Math.round(droppedHour * 2) / 2, MIN_HOUR), MAX_HOUR);
+                const snappedHour = Math.min(Math.max(Math.round(droppedHour * 4) / 4, MIN_HOUR), MAX_HOUR);
                 setDragPreview({ snappedHour, displayName: lane.displayName, x: e.clientX, y: e.clientY });
               }}
               onDragLeave={(e) => {
@@ -1157,7 +1158,7 @@ function DayView({
                 const rect = e.currentTarget.getBoundingClientRect();
                 const offsetY = e.clientY - rect.top;
                 const raw = MIN_HOUR + offsetY / HOUR_HEIGHT;
-                const snapped = Math.max(MIN_HOUR, Math.min(Math.round(raw * 2) / 2, MAX_HOUR - 0.5));
+                const snapped = Math.max(MIN_HOUR, Math.min(Math.round(raw * 4) / 4, MAX_HOUR - 0.25));
                 onEmptySlotClick(date, snapped, lane.teamMemberId);
               }}
             >
@@ -1324,7 +1325,7 @@ function DayView({
       {dragPreview && draggingJobId && (
         <div
           className="pointer-events-none fixed z-50 rounded-lg bg-slate-900 px-3 py-2 text-sm text-white shadow-lg"
-          style={{ left: dragPreview.x + 16, top: dragPreview.y - 40 }}
+          style={{ left: dragPreview.x + 16, top: dragPreview.y - 64 }}
         >
           Move visit to {formatSnappedHour(dragPreview.snappedHour)} · {formatDateShort(date)} · {dragPreview.displayName}
         </div>
@@ -1566,6 +1567,7 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showCancelScopeDialog, setShowCancelScopeDialog] = useState(false);
   const [showReopenConfirm, setShowReopenConfirm] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const jobQuery = useQuery({
     queryKey: ['job', jobId],
     queryFn: () => jobsApi.get(jobId),
@@ -1576,6 +1578,7 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
     queryClient.invalidateQueries({ queryKey: ['job', jobId] });
     queryClient.invalidateQueries({ queryKey: ['jobs'] });
     queryClient.invalidateQueries({ queryKey: ['schedule'] });
+    queryClient.invalidateQueries({ queryKey: ['invoices'] });
   }
 
   const reopenMutation = useMutation({
@@ -1592,6 +1595,7 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
       invalidate();
       onClose();
     },
+    onError: (err) => setError(err instanceof ApiClientError ? err.message : 'Failed to delete job'),
   });
 
   const stageMutation = useMutation({
@@ -1626,6 +1630,9 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
 
   return (
     <div className="p-6">
+      {error && (
+        <div className="mb-3 rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+      )}
       <div className="mb-4 flex items-start justify-between">
         <div>
           <div className="flex items-center gap-2">
@@ -1742,21 +1749,23 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
             {reopenMutation.isPending ? 'Reopening…' : 'Reopen'}
           </Button>
         )}
-        <Button
-          variant="danger"
-          size="sm"
-          onClick={() => setShowDeleteDialog(true)}
-          disabled={deleteMutation.isPending}
-        >
-          Delete
-        </Button>
+        {job.jobStage !== 'job_done' && (
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => setShowDeleteDialog(true)}
+            disabled={deleteMutation.isPending}
+          >
+            Delete
+          </Button>
+        )}
       </div>
 
       {showReopenConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
             <p className="text-sm text-slate-800">
-              Ви впевнені що хочете повторно відкрити цю роботу?
+              Are you sure you want to reopen this job?
             </p>
             <div className="mt-4 flex flex-col gap-2">
               <Button

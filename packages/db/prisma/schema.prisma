@@ -430,7 +430,7 @@ model Invoice {
   updatedAt                 DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   organization Organization @relation(fields: [organizationId], references: [id])
-  job          Job          @relation(fields: [jobId], references: [id])
+  job          Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
   customer     Customer     @relation(fields: [customerId], references: [id])
 
   @@unique([organizationId, invoiceNumber])

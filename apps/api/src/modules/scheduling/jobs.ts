@@ -267,7 +267,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     const limit = query.limit;
     const rows = await prisma.job.findMany({
       where,
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      orderBy: [{ scheduledStartAt: 'asc' }, { id: 'asc' }],
       take: limit + 1,
       ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
       include: {
@@ -740,11 +740,14 @@ export async function jobsRoutes(fastify: FastifyInstance) {
 
     const job = await prisma.job.findFirst({
       where: { id, organizationId: orgId },
-      select: { id: true, recurringSeriesId: true },
+      select: { id: true, recurringSeriesId: true, invoice: { select: { status: true } } },
     });
     if (!job) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
     if (job.recurringSeriesId) {
       throw new ApiError(ERROR_CODES.NOT_RECURRING, 400, 'Use occurrence-delete for recurring jobs');
+    }
+    if (job.invoice?.status === 'paid') {
+      throw new ApiError(ERROR_CODES.VALIDATION_FAILED, 400, 'Cannot delete a job with a paid invoice');
     }
 
     await prisma.job.delete({ where: { id } });
@@ -768,8 +771,8 @@ export async function jobsRoutes(fastify: FastifyInstance) {
         organizationId: req.auth.orgId,
         deletedFromSeriesAt: null,
       },
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-      take: 50,
+      orderBy: [{ scheduledStartAt: 'asc' }, { id: 'asc' }],
+      take: 2000,
       include: {
         customer: { select: { displayName: true } },
         assignee: { select: { displayName: true } },

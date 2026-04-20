@@ -64,6 +64,7 @@ export default function JobDetailPage() {
     queryClient.invalidateQueries({ queryKey: ['job', id] });
     queryClient.invalidateQueries({ queryKey: ['jobs'] });
     queryClient.invalidateQueries({ queryKey: ['schedule'] });
+    queryClient.invalidateQueries({ queryKey: ['invoices'] });
   }
 
   const deleteMutation = useMutation({
@@ -181,13 +182,15 @@ export default function JobDetailPage() {
               Reopen
             </Button>
           )}
-          <Button
-            variant="ghost"
-            className="text-red-600 hover:bg-red-50 hover:text-red-700"
-            onClick={() => setShowDeleteDialog(true)}
-          >
-            Delete
-          </Button>
+          {job.jobStage !== 'job_done' && (
+            <Button
+              variant="ghost"
+              className="text-red-600 hover:bg-red-50 hover:text-red-700"
+              onClick={() => setShowDeleteDialog(true)}
+            >
+              Delete
+            </Button>
+          )}
         </div>
       </div>
 
@@ -453,7 +456,7 @@ export default function JobDetailPage() {
           <div className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl">
             <h3 className="text-lg font-semibold text-slate-900">Reopen job</h3>
             <p className="mt-2 text-sm text-slate-600">
-              Ви впевнені що хочете повторно відкрити цю роботу?
+              Are you sure you want to reopen this job?
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <Button

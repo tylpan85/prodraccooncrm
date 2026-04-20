@@ -4,8 +4,8 @@ import type { InvoiceSummaryDto } from '@openclaw/shared';
 import { useQuery } from '@tanstack/react-query';
 import type { Route } from 'next';
 import Link from 'next/link';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { useState } from 'react';
 import { TableSkeleton } from '../../../../components/ui/skeleton';
 import { invoicesApi } from '../../../../lib/invoices-api';
 
@@ -41,6 +41,14 @@ function statusBadge(status: string) {
   );
 }
 
+const TODAY_LINE = (
+  <div className="flex items-center gap-2 px-4 py-1">
+    <div className="h-px flex-1 bg-red-400" />
+    <span className="whitespace-nowrap text-xs font-medium text-red-500">Today</span>
+    <div className="h-px flex-1 bg-red-400" />
+  </div>
+);
+
 export default function InvoicesPage() {
   const searchParams = useSearchParams();
   const initialTab = searchParams.get('status') ?? 'unsent';
@@ -51,7 +59,23 @@ export default function InvoicesPage() {
     queryFn: () => invoicesApi.list({ status: activeTab }),
   });
 
-  const invoices: InvoiceSummaryDto[] = invoicesQuery.data?.items ?? [];
+  const todayLineRef = useRef<HTMLTableRowElement>(null);
+
+  const invoices: InvoiceSummaryDto[] = [...(invoicesQuery.data?.items ?? [])].sort((a, b) => {
+    if (!a.dueDate && !b.dueDate) return 0;
+    if (!a.dueDate) return 1;
+    if (!b.dueDate) return -1;
+    return a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : 0;
+  });
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayLineIndex = invoices.findIndex((inv) => !inv.dueDate || inv.dueDate >= todayStr);
+
+  useEffect(() => {
+    if (todayLineRef.current) {
+      todayLineRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [invoicesQuery.data]);
 
   return (
     <div className="px-6 py-8">
@@ -98,27 +122,41 @@ export default function InvoicesPage() {
               </tr>
             </thead>
             <tbody>
-              {invoices.map((inv) => (
-                <tr key={inv.id} className="border-b border-slate-100 hover:bg-slate-50">
-                  <td className="px-3 py-2">
-                    <Link
-                      href={`/invoices/${inv.id}` as Route}
-                      className="font-medium text-brand-600 hover:underline"
-                    >
-                      #{inv.invoiceNumber}
-                    </Link>
-                  </td>
-                  <td className="px-3 py-2 text-slate-700">
-                    {inv.customerDisplayName ?? 'Unknown'}
-                  </td>
-                  <td className="px-3 py-2 text-slate-600">{inv.serviceNameSnapshot ?? '-'}</td>
-                  <td className="px-3 py-2 text-right font-medium text-slate-900">
-                    {formatCents(inv.totalCents)}
-                  </td>
-                  <td className="px-3 py-2 text-slate-600">{inv.dueDate ?? 'Upon receipt'}</td>
-                  <td className="px-3 py-2">{statusBadge(inv.status)}</td>
+              {invoices.flatMap((inv, idx) => {
+                const row = (
+                  <tr key={inv.id} className="border-b border-slate-100 hover:bg-slate-50">
+                    <td className="px-3 py-2">
+                      <Link
+                        href={`/invoices/${inv.id}` as Route}
+                        className="font-medium text-brand-600 hover:underline"
+                      >
+                        #{inv.invoiceNumber}
+                      </Link>
+                    </td>
+                    <td className="px-3 py-2 text-slate-700">{inv.customerDisplayName ?? 'Unknown'}</td>
+                    <td className="px-3 py-2 text-slate-600">{inv.serviceNameSnapshot ?? '-'}</td>
+                    <td className="px-3 py-2 text-right font-medium text-slate-900">
+                      {formatCents(inv.totalCents)}
+                    </td>
+                    <td className="px-3 py-2 text-slate-600">{inv.dueDate ?? 'Upon receipt'}</td>
+                    <td className="px-3 py-2">{statusBadge(inv.status)}</td>
+                  </tr>
+                );
+                if (idx === todayLineIndex) {
+                  return [
+                    <tr key="today-line" ref={todayLineRef}>
+                      <td colSpan={6} className="px-0 py-0">{TODAY_LINE}</td>
+                    </tr>,
+                    row,
+                  ];
+                }
+                return [row];
+              })}
+              {todayLineIndex === -1 && invoices.length > 0 && (
+                <tr ref={todayLineRef}>
+                  <td colSpan={6} className="px-0 py-0">{TODAY_LINE}</td>
                 </tr>
-              ))}
+              )}
             </tbody>
           </table>
         </div>

@@ -412,6 +412,20 @@ export default function EditJobPage() {
                 onChange={(e) => {
                   const newStartAt = e.target.value;
                   setStartAt(newStartAt);
+                  // Preserve duration: shift end time by the same delta
+                  const oldStart = new Date(startAt);
+                  const oldEnd = new Date(endAt);
+                  const newStart = new Date(newStartAt);
+                  if (!isNaN(oldStart.getTime()) && !isNaN(oldEnd.getTime()) && !isNaN(newStart.getTime())) {
+                    const durationMs = oldEnd.getTime() - oldStart.getTime();
+                    if (durationMs > 0) {
+                      const newEnd = new Date(newStart.getTime() + durationMs);
+                      // Format as datetime-local value (YYYY-MM-DDTHH:mm)
+                      const pad = (n: number) => String(n).padStart(2, '0');
+                      const newEndValue = `${newEnd.getFullYear()}-${pad(newEnd.getMonth() + 1)}-${pad(newEnd.getDate())}T${pad(newEnd.getHours())}:${pad(newEnd.getMinutes())}`;
+                      setEndAt(newEndValue);
+                    }
+                  }
                   // For weekly jobs: auto-sync recurrenceDayOfWeek to match the new date
                   if (recurrenceRule?.recurrenceFrequency === 'weekly') {
                     const d = new Date(newStartAt);
