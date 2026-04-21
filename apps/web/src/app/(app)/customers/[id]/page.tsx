@@ -1,44 +1,19 @@
 'use client';
 
-import type { CustomerDto, InvoiceSummaryDto, JobSummaryDto } from '@openclaw/shared';
+import type { CustomerDto } from '@openclaw/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Route } from 'next';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
+import { InvoicesList } from '../../../../components/invoices-list';
+import { JobsList } from '../../../../components/jobs-list';
 import { Button } from '../../../../components/ui/button';
 import { DetailSkeleton } from '../../../../components/ui/skeleton';
 import { ApiClientError } from '../../../../lib/api-client';
 import { customersApi } from '../../../../lib/customers-api';
-import { invoicesApi } from '../../../../lib/invoices-api';
-import { jobsApi } from '../../../../lib/jobs-api';
 
 type Tab = 'overview' | 'jobs' | 'invoices';
-
-function fmtHour(d: Date): string {
-  const h = d.getUTCHours();
-  const m = d.getUTCMinutes();
-  const suffix = h >= 12 ? 'pm' : 'am';
-  const h12 = h % 12 || 12;
-  return m === 0 ? `${h12}${suffix}` : `${h12}:${String(m).padStart(2, '0')}${suffix}`;
-}
-
-function formatSchedule(startIso: string, endIso: string): string {
-  const start = new Date(startIso);
-  const end = new Date(endIso);
-  const month = start.toLocaleString('en-US', { month: 'short', timeZone: 'UTC' });
-  const day = start.getUTCDate();
-  const year = start.getUTCFullYear();
-  return `${month} ${day} ${year} ${fmtHour(start)}–${fmtHour(end)}`;
-}
-
-const TODAY_LINE = (
-  <div className="flex items-center gap-2 px-4 py-1">
-    <div className="h-px flex-1 bg-red-400" />
-    <span className="whitespace-nowrap text-xs font-medium text-red-500">Today</span>
-    <div className="h-px flex-1 bg-red-400" />
-  </div>
-);
 
 export default function CustomerDetailPage() {
   const params = useParams<{ id: string }>();
@@ -52,12 +27,6 @@ export default function CustomerDetailPage() {
     retry: false,
   });
 
-  const customerJobsQuery = useQuery({
-    queryKey: ['customerJobs', id],
-    queryFn: () => jobsApi.listForCustomer(id),
-    enabled: tab === 'jobs',
-  });
-
   const archiveMutation = useMutation({
     mutationFn: () => customersApi.archiveCustomer(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['customer', id] }),
@@ -67,27 +36,6 @@ export default function CustomerDetailPage() {
     mutationFn: () => customersApi.unarchiveCustomer(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['customer', id] }),
   });
-
-  const customerInvoicesQuery = useQuery({
-    queryKey: ['customerInvoices', id],
-    queryFn: () => invoicesApi.list({ customerId: id }),
-    enabled: tab === 'invoices',
-  });
-
-  const jobsTodayRef = useRef<HTMLTableRowElement>(null);
-  const invTodayRef = useRef<HTMLTableRowElement>(null);
-
-  useEffect(() => {
-    if (tab === 'jobs' && jobsTodayRef.current) {
-      jobsTodayRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }, [tab, customerJobsQuery.data]);
-
-  useEffect(() => {
-    if (tab === 'invoices' && invTodayRef.current) {
-      invTodayRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }, [tab, customerInvoicesQuery.data]);
 
   if (customerQuery.isLoading) {
     return (
@@ -289,165 +237,17 @@ export default function CustomerDetailPage() {
 
       {tab === 'jobs' && (
         <div className="mt-6">
-          {customerJobsQuery.isLoading && (
-            <p className="py-6 text-sm text-slate-500">Loading jobs…</p>
-          )}
-          {!customerJobsQuery.isLoading && (customerJobsQuery.data?.items ?? []).length === 0 && (
-            <div className="rounded-md border border-dashed border-slate-300 px-6 py-12 text-center text-sm text-slate-500">
-              No jobs yet for this customer.
-            </div>
-          )}
-          {(customerJobsQuery.data?.items ?? []).length > 0 && (() => {
-            const STAGE: Record<string, { bg: string; text: string; label: string }> = {
-              scheduled:         { bg: 'bg-slate-100',   text: 'text-slate-600', label: 'Scheduled' },
-              confirmation_sent: { bg: 'bg-blue-100',    text: 'text-blue-700',  label: 'Conf. Sent' },
-              confirmed:         { bg: 'bg-green-100',   text: 'text-green-700', label: 'Confirmed' },
-              job_done:          { bg: 'bg-emerald-600', text: 'text-white',     label: 'Done' },
-              cancelled:         { bg: 'bg-red-100',     text: 'text-red-700',   label: 'Cancelled' },
-            };
-            const sortedJobs = [...(customerJobsQuery.data?.items ?? [])].sort(
-              (a, b) => new Date(a.scheduledStartAt).getTime() - new Date(b.scheduledStartAt).getTime(),
-            );
-            const todayMs = new Date().setHours(0, 0, 0, 0);
-            const todayIdx = sortedJobs.findIndex(
-              (j) => new Date(j.scheduledStartAt).getTime() >= todayMs,
-            );
-            return (
-              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-                <table className="min-w-full divide-y divide-slate-200">
-                  <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                    <tr>
-                      <th className="px-4 py-3 font-medium">Job #</th>
-                      <th className="px-4 py-3 font-medium">Title</th>
-                      <th className="px-4 py-3 font-medium">Stage</th>
-                      <th className="px-4 py-3 font-medium">Schedule</th>
-                      <th className="px-4 py-3 font-medium">Assignee</th>
-                      <th className="px-4 py-3 font-medium text-right">Price</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {sortedJobs.flatMap((j: JobSummaryDto, idx: number) => {
-                      const s = STAGE[j.jobStage] ?? { bg: 'bg-slate-100', text: 'text-slate-600', label: j.jobStage };
-                      const row = (
-                        <tr key={j.id} className="hover:bg-slate-50">
-                          <td className="px-4 py-3 text-sm font-medium text-slate-900">
-                            <Link href={`/jobs/${j.id}` as Route} className="text-brand-700 hover:underline">
-                              {j.jobNumber}
-                            </Link>
-                          </td>
-                          <td className="px-4 py-3 text-sm text-slate-700">{j.titleOrSummary ?? '—'}</td>
-                          <td className="px-4 py-3 text-sm">
-                            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${s.bg} ${s.text}`}>
-                              {s.label}
-                            </span>
-                          </td>
-                          <td className="px-4 py-3 text-sm text-slate-700">
-                            {formatSchedule(j.scheduledStartAt, j.scheduledEndAt)}
-                          </td>
-                          <td className="px-4 py-3 text-sm text-slate-700">{j.assigneeDisplayName ?? '—'}</td>
-                          <td className="px-4 py-3 text-right text-sm text-slate-700">
-                            ${(j.priceCents / 100).toFixed(2)}
-                          </td>
-                        </tr>
-                      );
-                      if (idx === todayIdx) {
-                        return [
-                          <tr key="today-line" ref={jobsTodayRef}>
-                            <td colSpan={6} className="px-0 py-0">{TODAY_LINE}</td>
-                          </tr>,
-                          row,
-                        ];
-                      }
-                      return [row];
-                    })}
-                    {todayIdx === -1 && sortedJobs.length > 0 && (
-                      <tr ref={jobsTodayRef}>
-                        <td colSpan={6} className="px-0 py-0">{TODAY_LINE}</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            );
-          })()}
+          <JobsList customerId={id} hideHeader emptyMessage="No jobs yet for this customer." />
         </div>
       )}
 
       {tab === 'invoices' && (
         <div className="mt-6">
-          {customerInvoicesQuery.isLoading && (
-            <p className="py-6 text-sm text-slate-500">Loading invoices…</p>
-          )}
-          {!customerInvoicesQuery.isLoading &&
-            (customerInvoicesQuery.data?.items ?? []).length === 0 && (
-              <div className="rounded-md border border-dashed border-slate-300 px-6 py-12 text-center text-sm text-slate-500">
-                No invoices yet for this customer.
-              </div>
-            )}
-          {(customerInvoicesQuery.data?.items ?? []).length > 0 && (() => {
-            const sortedInvs = [...(customerInvoicesQuery.data?.items ?? [])].sort(
-              (a: InvoiceSummaryDto, b: InvoiceSummaryDto) => {
-                if (!a.dueDate && !b.dueDate) return 0;
-                if (!a.dueDate) return 1;
-                if (!b.dueDate) return -1;
-                return a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : 0;
-              },
-            );
-            const todayStr = new Date().toISOString().slice(0, 10);
-            const todayIdx = sortedInvs.findIndex(
-              (inv: InvoiceSummaryDto) => !inv.dueDate || inv.dueDate >= todayStr,
-            );
-            return (
-              <div className="overflow-hidden rounded-lg border border-slate-200 bg-white">
-                <table className="min-w-full divide-y divide-slate-200">
-                  <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                    <tr>
-                      <th className="px-4 py-3 font-medium">Number</th>
-                      <th className="px-4 py-3 font-medium">Service</th>
-                      <th className="px-4 py-3 font-medium text-right">Amount</th>
-                      <th className="px-4 py-3 font-medium">Due Date</th>
-                      <th className="px-4 py-3 font-medium">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {sortedInvs.flatMap((inv: InvoiceSummaryDto, idx: number) => {
-                      const row = (
-                        <tr key={inv.id} className="hover:bg-slate-50">
-                          <td className="px-4 py-3 text-sm font-medium text-slate-900">
-                            <Link href={`/invoices/${inv.id}` as Route} className="text-brand-700 hover:underline">
-                              #{inv.invoiceNumber}
-                            </Link>
-                          </td>
-                          <td className="px-4 py-3 text-sm text-slate-600">{inv.serviceNameSnapshot ?? '-'}</td>
-                          <td className="px-4 py-3 text-right text-sm font-medium text-slate-900">
-                            ${(inv.totalCents / 100).toFixed(2)}
-                          </td>
-                          <td className="px-4 py-3 text-sm text-slate-600">{inv.dueDate ?? 'Upon receipt'}</td>
-                          <td className="px-4 py-3 text-sm capitalize text-slate-700">
-                            {inv.status === 'past_due' ? 'Past Due' : inv.status}
-                          </td>
-                        </tr>
-                      );
-                      if (idx === todayIdx) {
-                        return [
-                          <tr key="today-line" ref={invTodayRef}>
-                            <td colSpan={5} className="px-0 py-0">{TODAY_LINE}</td>
-                          </tr>,
-                          row,
-                        ];
-                      }
-                      return [row];
-                    })}
-                    {todayIdx === -1 && sortedInvs.length > 0 && (
-                      <tr ref={invTodayRef}>
-                        <td colSpan={5} className="px-0 py-0">{TODAY_LINE}</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            );
-          })()}
+          <InvoicesList
+            customerId={id}
+            hideHeader
+            emptyMessage="No invoices yet for this customer."
+          />
         </div>
       )}
     </div>

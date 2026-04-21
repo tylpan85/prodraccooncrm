@@ -245,7 +245,20 @@ export async function customersRoutes(fastify: FastifyInstance) {
 
   fastify.get('/api/customers', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
-    const { q, cursor, limit, includeArchived } = customerListQuerySchema.parse(req.query);
+    const {
+      q,
+      cursor,
+      limit,
+      includeArchived,
+      customerType,
+      subcontractor,
+      doNotService,
+      sendNotifications,
+      tag,
+      city,
+      state,
+      leadSource,
+    } = customerListQuerySchema.parse(req.query);
 
     const where: Prisma.CustomerWhereInput = {
       organizationId: req.auth.orgId,
@@ -262,6 +275,18 @@ export async function customersRoutes(fastify: FastifyInstance) {
       }
       where.OR = orClauses;
     }
+    if (customerType) where.customerType = customerType;
+    if (subcontractor !== undefined) where.subcontractor = subcontractor;
+    if (doNotService !== undefined) where.doNotService = doNotService;
+    if (sendNotifications !== undefined) where.sendNotifications = sendNotifications;
+    if (tag) where.tags = { some: { tag } };
+    if (leadSource) where.leadSource = { contains: leadSource, mode: 'insensitive' };
+    if (city || state) {
+      const addressWhere: Prisma.CustomerAddressWhereInput = {};
+      if (city) addressWhere.city = { contains: city, mode: 'insensitive' };
+      if (state) addressWhere.state = state;
+      where.addresses = { some: addressWhere };
+    }
 
     const rows = await prisma.customer.findMany({
       where,
@@ -271,7 +296,7 @@ export async function customersRoutes(fastify: FastifyInstance) {
       include: {
         phones: { orderBy: { createdAt: 'asc' }, take: 1 },
         emails: { orderBy: { createdAt: 'asc' }, take: 1 },
-        addresses: { orderBy: { createdAt: 'asc' }, take: 1 },
+        addresses: { orderBy: { createdAt: 'asc' } },
         _count: {
           select: {
             jobs: true,
@@ -291,6 +316,14 @@ export async function customersRoutes(fastify: FastifyInstance) {
       primaryPhone: c.phones[0]?.value ?? null,
       primaryEmail: c.emails[0]?.value ?? null,
       city: c.addresses[0]?.city ?? null,
+      addresses: c.addresses.map((a) => ({
+        id: a.id,
+        street: a.street,
+        unit: a.unit,
+        city: a.city,
+        state: a.state,
+        zip: a.zip,
+      })),
       jobsCount: c._count.jobs,
       openInvoicesCount: c._count.invoices,
     }));

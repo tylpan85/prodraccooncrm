@@ -53,6 +53,11 @@ export default function JobDetailPage() {
     queryFn: () => settingsApi.listTeamMembers(),
   });
 
+  const notesQuery = useQuery({
+    queryKey: ['job-notes', id],
+    queryFn: () => jobsApi.getNotes(id),
+  });
+
   const [error, setError] = useState<string | null>(null);
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
   const [showAssignDialog, setShowAssignDialog] = useState(false);
@@ -68,14 +73,22 @@ export default function JobDetailPage() {
   }
 
   const deleteMutation = useMutation({
-    mutationFn: (scope?: 'this' | 'this_and_future') => {
+    mutationFn: async (scope?: 'this' | 'this_and_future') => {
       if (scope) {
-        return jobsApi.occurrenceDelete(id, { scope }).then(() => {});
+        const res = await jobsApi.occurrenceDelete(id, { scope });
+        return { skippedJobs: res.item.skippedJobs ?? [] };
       }
-      return jobsApi.delete(id);
+      await jobsApi.delete(id);
+      return { skippedJobs: [] as { id: string; jobNumber: string }[] };
     },
-    onSuccess: () => {
+    onSuccess: (res) => {
       invalidate();
+      if (res.skippedJobs.length > 0) {
+        const nums = res.skippedJobs.map((j) => `#${j.jobNumber}`).join(', ');
+        setError(`Skipped ${nums} (marked as done with invoice)`);
+        setShowDeleteDialog(false);
+        return;
+      }
       router.push('/scheduler' as Route);
     },
     onError: (err) => setError(err instanceof ApiClientError ? err.message : 'Failed to delete'),
@@ -198,8 +211,23 @@ export default function JobDetailPage() {
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <Card title="Details">
           <dl className="space-y-2 text-sm">
-            <Row label="Service" value={job.serviceName ?? '—'} />
-            <Row label="Price" value={formatCents(job.priceCents)} />
+            {job.services && job.services.length > 0 ? (
+              <>
+                {job.services.map((s, i) => (
+                  <Row
+                    key={s.id}
+                    label={i === 0 ? 'Services' : ''}
+                    value={`${s.serviceName ?? s.nameSnapshot ?? '—'} · ${formatCents(s.priceCents)}`}
+                  />
+                ))}
+                <Row label="Total" value={formatCents(job.priceCents)} />
+              </>
+            ) : (
+              <>
+                <Row label="Service" value={job.serviceName ?? '—'} />
+                <Row label="Price" value={formatCents(job.priceCents)} />
+              </>
+            )}
             <Row label="Lead source" value={job.leadSource ?? '—'} />
           </dl>
         </Card>
@@ -258,10 +286,32 @@ export default function JobDetailPage() {
         )}
 
         {job.privateNotes && (
-          <Card title="Notes">
+          <Card title="Job notes">
             <p className="whitespace-pre-wrap text-sm text-slate-700">{job.privateNotes}</p>
           </Card>
         )}
+
+        <Card title="Customer notes">
+          {notesQuery.isLoading ? (
+            <p className="text-sm text-slate-500">Loading notes…</p>
+          ) : (notesQuery.data?.notes ?? []).length === 0 ? (
+            <p className="text-sm text-slate-500">No notes yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {(notesQuery.data?.notes ?? []).map((note) => (
+                <div
+                  key={note.id}
+                  className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                >
+                  <p className="whitespace-pre-wrap text-slate-800">{note.content}</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {note.authorEmail ?? 'Unknown'} · {new Date(note.createdAt).toLocaleString()}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </Card>
 
         {/* Invoice section */}
         {job.invoice && (

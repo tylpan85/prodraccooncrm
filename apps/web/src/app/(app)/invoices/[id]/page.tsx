@@ -130,20 +130,33 @@ export default function InvoiceDetailPage() {
       <div className="mt-6 grid gap-6 sm:grid-cols-2">
         {/* Line detail */}
         <div className="rounded-md border border-slate-200 p-4">
-          <h2 className="text-sm font-medium text-slate-500">Line Item</h2>
+          <h2 className="text-sm font-medium text-slate-500">
+            {inv.lineItems && inv.lineItems.length > 0 ? 'Line Items' : 'Line Item'}
+          </h2>
           <div className="mt-3 space-y-2 text-sm">
-            <div className="flex justify-between">
-              <span className="text-slate-600">Service</span>
-              <span className="text-slate-900">{inv.serviceNameSnapshot ?? '-'}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-slate-600">Price</span>
-              <span className="text-slate-900">
-                {inv.servicePriceCentsSnapshot != null
-                  ? formatCents(inv.servicePriceCentsSnapshot)
-                  : '-'}
-              </span>
-            </div>
+            {inv.lineItems && inv.lineItems.length > 0 ? (
+              inv.lineItems.map((li) => (
+                <div key={li.id} className="flex justify-between">
+                  <span className="text-slate-600">{li.description}</span>
+                  <span className="text-slate-900">{formatCents(li.priceCents)}</span>
+                </div>
+              ))
+            ) : (
+              <>
+                <div className="flex justify-between">
+                  <span className="text-slate-600">Service</span>
+                  <span className="text-slate-900">{inv.serviceNameSnapshot ?? '-'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-600">Price</span>
+                  <span className="text-slate-900">
+                    {inv.servicePriceCentsSnapshot != null
+                      ? formatCents(inv.servicePriceCentsSnapshot)
+                      : '-'}
+                  </span>
+                </div>
+              </>
+            )}
           </div>
           <div className="mt-4 border-t border-slate-200 pt-3 space-y-1 text-sm">
             <div className="flex justify-between">

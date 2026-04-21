@@ -185,13 +185,15 @@ export function formStateToRequest(form: CustomerFormState): CreateCustomerReque
     .map(addressToInput)
     .filter((a): a is AddressInput => a !== null);
 
+  const isBusiness = form.customerType === 'Business';
+
   return {
     firstName: trimToNull(form.firstName),
     lastName: trimToNull(form.lastName),
-    companyName: trimToNull(form.companyName),
-    role: trimToNull(form.role),
+    companyName: isBusiness ? trimToNull(form.companyName) : null,
+    role: isBusiness ? trimToNull(form.role) : null,
     customerType: form.customerType,
-    subcontractor: form.subcontractor,
+    subcontractor: isBusiness ? form.subcontractor : false,
     doNotService: form.doNotService,
     sendNotifications: form.doNotService ? false : form.sendNotifications,
     customerNotes: trimToNull(form.customerNotes),
@@ -254,22 +256,39 @@ export function CustomerForm({
       return next;
     });
 
-  const identityValid = useMemo(
-    () =>
-      form.firstName.trim().length > 0 ||
-      form.lastName.trim().length > 0 ||
-      form.companyName.trim().length > 0,
-    [form.firstName, form.lastName, form.companyName],
-  );
+  const isBusiness = form.customerType === 'Business';
+
+  const identityValid = useMemo(() => {
+    if (isBusiness) {
+      return (
+        form.firstName.trim().length > 0 ||
+        form.lastName.trim().length > 0 ||
+        form.companyName.trim().length > 0
+      );
+    }
+    return form.firstName.trim().length > 0 || form.lastName.trim().length > 0;
+  }, [form.firstName, form.lastName, form.companyName, isBusiness]);
 
   const phoneValid = useMemo(
     () => form.phones.some((p) => p.value.trim().length > 0),
     [form.phones],
   );
 
+  const singleEmail = form.emails[0]?.value ?? '';
+  const setSingleEmail = (value: string) => {
+    update((c) => {
+      if (value.length === 0) return { ...c, emails: [] };
+      const existing = c.emails[0];
+      const next: EmailDraft = existing
+        ? { ...existing, value }
+        : { _key: nextKey('email'), value };
+      return { ...c, emails: [next] };
+    });
+  };
+
   return (
     <form
-      className="mx-auto max-w-3xl space-y-6 px-6 py-8"
+      className="mx-auto max-w-6xl space-y-6 px-6 py-8"
       onSubmit={(e) => {
         e.preventDefault();
         if (!identityValid || !phoneValid) return;
@@ -305,334 +324,316 @@ export function CustomerForm({
         </div>
       )}
 
-      <Section title="Identity">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="First name">
-            <Input
-              value={form.firstName}
-              onChange={(e) => update((c) => ({ ...c, firstName: e.target.value }))}
-              onBlur={() => onIdentityChange?.(form)}
-              maxLength={80}
-              disabled={saving}
-            />
-          </Field>
-          <Field label="Last name">
-            <Input
-              value={form.lastName}
-              onChange={(e) => update((c) => ({ ...c, lastName: e.target.value }))}
-              onBlur={() => onIdentityChange?.(form)}
-              maxLength={80}
-              disabled={saving}
-            />
-          </Field>
-          <Field label="Company name" className="sm:col-span-2">
-            <Input
-              value={form.companyName}
-              onChange={(e) => update((c) => ({ ...c, companyName: e.target.value }))}
-              onBlur={() => onIdentityChange?.(form)}
-              maxLength={120}
-              disabled={saving}
-            />
-          </Field>
-          <Field label="Role">
-            <Input
-              value={form.role}
-              onChange={(e) => update((c) => ({ ...c, role: e.target.value }))}
-              maxLength={80}
-              disabled={saving}
-            />
-          </Field>
-          <Field label="Customer type">
-            <Select
-              value={form.customerType}
-              onChange={(value) =>
-                update((c) => ({
-                  ...c,
-                  customerType: value as 'Homeowner' | 'Business',
-                  subcontractor: value === 'Business' ? c.subcontractor : false,
-                }))
-              }
-              options={CUSTOMER_TYPES.map((t) => ({ value: t, label: t }))}
-              disabled={saving}
-            />
-          </Field>
-
-          {form.customerType === 'Business' && (
-            <Toggle
-              label="Subcontractor"
-              checked={form.subcontractor}
-              onChange={(v) => update((c) => ({ ...c, subcontractor: v }))}
-              disabled={saving}
-            />
-          )}
-
-          <Toggle
-            label="Do not service"
-            checked={form.doNotService}
-            onChange={(v) =>
-              update((c) => ({
-                ...c,
-                doNotService: v,
-                sendNotifications: v ? false : c.sendNotifications,
-              }))
-            }
-            disabled={saving}
-          />
-          <Toggle
-            label="Send notifications"
-            checked={form.sendNotifications && !form.doNotService}
-            onChange={(v) => update((c) => ({ ...c, sendNotifications: v }))}
-            disabled={saving || form.doNotService}
-          />
-        </div>
-        {!identityValid && (
-          <p className="mt-2 text-xs text-red-600">Provide a first/last name or a company name.</p>
-        )}
-      </Section>
-
-      <Section title="Phones" required>
-        <div className="space-y-2">
-          {form.phones.map((p, idx) => (
-            <div key={p._key} className="grid gap-2 sm:grid-cols-[1fr_140px_1fr_auto]">
-              <Input
-                ref={idx === 0 ? phoneRef : undefined}
-                value={p.value}
-                placeholder="(555) 555-1234"
-                onChange={(e) =>
-                  update((c) => {
-                    const next = [...c.phones];
-                    next[idx] = { ...next[idx]!, value: e.target.value };
-                    return { ...c, phones: next };
-                  })
-                }
-                disabled={saving}
-              />
-              <Select
-                value={p.type ?? ''}
-                onChange={(value) =>
-                  update((c) => {
-                    const next = [...c.phones];
-                    next[idx] = {
-                      ...next[idx]!,
-                      type: value === '' ? null : (value as PhoneInput['type']),
-                    };
-                    return { ...c, phones: next };
-                  })
-                }
-                options={[
-                  { value: '', label: 'Type' },
-                  ...PHONE_TYPES.map((t) => ({ value: t, label: t })),
-                ]}
-                disabled={saving}
-              />
-              <Input
-                value={p.note}
-                placeholder="Note"
-                onChange={(e) =>
-                  update((c) => {
-                    const next = [...c.phones];
-                    next[idx] = { ...next[idx]!, note: e.target.value };
-                    return { ...c, phones: next };
-                  })
-                }
-                disabled={saving}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={saving}
-                onClick={() =>
-                  update((c) => ({ ...c, phones: c.phones.filter((_, i) => i !== idx) }))
-                }
-              >
-                Remove
-              </Button>
-            </div>
-          ))}
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={saving || form.phones.length >= 10}
-            onClick={() =>
-              update((c) => ({
-                ...c,
-                phones: [
-                  ...c.phones,
-                  { _key: nextKey('phone'), value: '', type: 'mobile', note: '' },
-                ],
-              }))
-            }
-          >
-            Add phone
-          </Button>
-          {!phoneValid && (
-            <p className="text-xs text-red-600">At least one phone number is required.</p>
-          )}
-        </div>
-      </Section>
-
-      <Section title="Emails">
-        <div className="space-y-2">
-          {form.emails.map((e, idx) => (
-            <div key={e._key} className="flex gap-2">
-              <Input
-                ref={idx === 0 ? emailRef : undefined}
-                value={e.value}
-                placeholder="name@example.com"
-                onChange={(ev) =>
-                  update((c) => {
-                    const next = [...c.emails];
-                    next[idx] = { ...next[idx]!, value: ev.target.value };
-                    return { ...c, emails: next };
-                  })
-                }
-                disabled={saving}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                disabled={saving}
-                onClick={() =>
-                  update((c) => ({ ...c, emails: c.emails.filter((_, i) => i !== idx) }))
-                }
-              >
-                Remove
-              </Button>
-            </div>
-          ))}
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={saving || form.emails.length >= 10}
-            onClick={() =>
-              update((c) => ({
-                ...c,
-                emails: [...c.emails, { _key: nextKey('email'), value: '' }],
-              }))
-            }
-          >
-            Add email
-          </Button>
-        </div>
-      </Section>
-
-      <Section title="Primary address">
-        <AddressEditor
-          value={form.primaryAddress}
-          disabled={saving}
-          onChange={(next) => update((c) => ({ ...c, primaryAddress: next }))}
-          onBlur={() => onIdentityChange?.(form)}
-        />
-      </Section>
-
-      {form.additionalAddresses.length > 0 && (
-        <Section title="Additional addresses">
-          <div className="space-y-4">
-            {form.additionalAddresses.map((a, idx) => (
-              <div key={a._key} className="rounded-md border border-slate-200 p-3">
-                <AddressEditor
-                  value={a}
-                  disabled={saving}
-                  onChange={(next) =>
-                    update((c) => {
-                      const list = [...c.additionalAddresses];
-                      list[idx] = next;
-                      return { ...c, additionalAddresses: list };
-                    })
+      <div className="grid gap-6 lg:grid-cols-2">
+        <div className="space-y-6">
+          <Section title="Customer type">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="min-w-[180px]">
+                <Select
+                  value={form.customerType}
+                  onChange={(value) =>
+                    update((c) => ({
+                      ...c,
+                      customerType: value as 'Homeowner' | 'Business',
+                      subcontractor: value === 'Business' ? c.subcontractor : false,
+                    }))
                   }
+                  options={CUSTOMER_TYPES.map((t) => ({ value: t, label: t }))}
+                  disabled={saving}
                 />
-                <div className="mt-2 flex justify-end">
+              </div>
+              {isBusiness && (
+                <Toggle
+                  label="Subcontractor"
+                  checked={form.subcontractor}
+                  onChange={(v) => update((c) => ({ ...c, subcontractor: v }))}
+                  disabled={saving}
+                />
+              )}
+              <Toggle
+                label="Do not service"
+                checked={form.doNotService}
+                onChange={(v) =>
+                  update((c) => ({
+                    ...c,
+                    doNotService: v,
+                    sendNotifications: v ? false : c.sendNotifications,
+                  }))
+                }
+                disabled={saving}
+              />
+              <Toggle
+                label="Send notifications"
+                checked={form.sendNotifications && !form.doNotService}
+                onChange={(v) => update((c) => ({ ...c, sendNotifications: v }))}
+                disabled={saving || form.doNotService}
+              />
+            </div>
+          </Section>
+
+          <Section title="Identity">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="First name">
+                <Input
+                  value={form.firstName}
+                  onChange={(e) => update((c) => ({ ...c, firstName: e.target.value }))}
+                  onBlur={() => onIdentityChange?.(form)}
+                  maxLength={80}
+                  disabled={saving}
+                />
+              </Field>
+              <Field label="Last name">
+                <Input
+                  value={form.lastName}
+                  onChange={(e) => update((c) => ({ ...c, lastName: e.target.value }))}
+                  onBlur={() => onIdentityChange?.(form)}
+                  maxLength={80}
+                  disabled={saving}
+                />
+              </Field>
+              {isBusiness && (
+                <>
+                  <Field label="Company name" className="sm:col-span-2">
+                    <Input
+                      value={form.companyName}
+                      onChange={(e) => update((c) => ({ ...c, companyName: e.target.value }))}
+                      onBlur={() => onIdentityChange?.(form)}
+                      maxLength={120}
+                      disabled={saving}
+                    />
+                  </Field>
+                  <Field label="Role" className="sm:col-span-2">
+                    <Input
+                      value={form.role}
+                      onChange={(e) => update((c) => ({ ...c, role: e.target.value }))}
+                      maxLength={80}
+                      disabled={saving}
+                    />
+                  </Field>
+                </>
+              )}
+            </div>
+            {!identityValid && (
+              <p className="mt-2 text-xs text-red-600">
+                {isBusiness
+                  ? 'Provide a first/last name or a company name.'
+                  : 'Provide a first or last name.'}
+              </p>
+            )}
+          </Section>
+
+          <Section title="Phones" required>
+            <div className="space-y-2">
+              {form.phones.map((p, idx) => (
+                <div key={p._key} className="grid gap-2 sm:grid-cols-[1fr_120px_1fr_auto]">
+                  <Input
+                    ref={idx === 0 ? phoneRef : undefined}
+                    value={p.value}
+                    placeholder="(555) 555-1234"
+                    onChange={(e) =>
+                      update((c) => {
+                        const next = [...c.phones];
+                        next[idx] = { ...next[idx]!, value: e.target.value };
+                        return { ...c, phones: next };
+                      })
+                    }
+                    disabled={saving}
+                  />
+                  <Select
+                    value={p.type ?? ''}
+                    onChange={(value) =>
+                      update((c) => {
+                        const next = [...c.phones];
+                        next[idx] = {
+                          ...next[idx]!,
+                          type: value === '' ? null : (value as PhoneInput['type']),
+                        };
+                        return { ...c, phones: next };
+                      })
+                    }
+                    options={[
+                      { value: '', label: 'Type' },
+                      ...PHONE_TYPES.map((t) => ({ value: t, label: t })),
+                    ]}
+                    disabled={saving}
+                  />
+                  <Input
+                    value={p.note}
+                    placeholder="Note"
+                    onChange={(e) =>
+                      update((c) => {
+                        const next = [...c.phones];
+                        next[idx] = { ...next[idx]!, note: e.target.value };
+                        return { ...c, phones: next };
+                      })
+                    }
+                    disabled={saving}
+                  />
                   <Button
                     type="button"
                     variant="ghost"
                     size="sm"
                     disabled={saving}
                     onClick={() =>
-                      update((c) => ({
-                        ...c,
-                        additionalAddresses: c.additionalAddresses.filter((_, i) => i !== idx),
-                      }))
+                      update((c) => ({ ...c, phones: c.phones.filter((_, i) => i !== idx) }))
                     }
                   >
-                    Remove address
+                    Remove
                   </Button>
                 </div>
-              </div>
-            ))}
-          </div>
-        </Section>
-      )}
+              ))}
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                disabled={saving || form.phones.length >= 10}
+                onClick={() =>
+                  update((c) => ({
+                    ...c,
+                    phones: [
+                      ...c.phones,
+                      { _key: nextKey('phone'), value: '', type: 'mobile', note: '' },
+                    ],
+                  }))
+                }
+              >
+                Add phone
+              </Button>
+              {!phoneValid && (
+                <p className="text-xs text-red-600">At least one phone number is required.</p>
+              )}
+            </div>
+          </Section>
 
-      <div>
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          disabled={saving || form.additionalAddresses.length >= 20}
-          onClick={() =>
-            update((c) => ({
-              ...c,
-              additionalAddresses: [...c.additionalAddresses, newAddress()],
-            }))
-          }
-        >
-          Add another address
-        </Button>
-      </div>
-
-      <Section title="Billing address">
-        <Input
-          value={form.billingAddress}
-          placeholder="Optional single line"
-          onChange={(e) => update((c) => ({ ...c, billingAddress: e.target.value }))}
-          disabled={saving}
-        />
-      </Section>
-
-      <Section title="Tags">
-        <TagEditor
-          value={form.tags}
-          disabled={saving}
-          onChange={(next) => update((c) => ({ ...c, tags: next }))}
-        />
-      </Section>
-
-      <Section title="Notes">
-        <textarea
-          className="min-h-24 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-100"
-          value={form.customerNotes}
-          maxLength={4000}
-          onChange={(e) => update((c) => ({ ...c, customerNotes: e.target.value }))}
-          disabled={saving}
-        />
-      </Section>
-
-      <Section title="Lead">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <Field label="Lead source">
-            <Select
-              value={form.leadSource}
-              onChange={(value) => update((c) => ({ ...c, leadSource: value }))}
-              options={[
-                { value: '', label: '—' },
-                ...(leadSourcesQuery.data ?? []).map((s) => ({ value: s.name, label: s.name })),
-              ]}
-              disabled={saving}
-            />
-          </Field>
-          <Field label="Referred by">
+          <Section title="Email">
             <Input
-              value={form.referredBy}
-              onChange={(e) => update((c) => ({ ...c, referredBy: e.target.value }))}
+              ref={emailRef}
+              type="email"
+              value={singleEmail}
+              placeholder="name@example.com"
+              maxLength={254}
+              onChange={(e) => setSingleEmail(e.target.value)}
               disabled={saving}
             />
-          </Field>
+          </Section>
+
+          <Section title="Lead">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Lead source">
+                <Select
+                  value={form.leadSource}
+                  onChange={(value) => update((c) => ({ ...c, leadSource: value }))}
+                  options={[
+                    { value: '', label: '—' },
+                    ...(leadSourcesQuery.data ?? []).map((s) => ({ value: s.name, label: s.name })),
+                  ]}
+                  disabled={saving}
+                />
+              </Field>
+              <Field label="Referred by">
+                <Input
+                  value={form.referredBy}
+                  onChange={(e) => update((c) => ({ ...c, referredBy: e.target.value }))}
+                  disabled={saving}
+                />
+              </Field>
+            </div>
+          </Section>
+
+          <Section title="Notes">
+            <textarea
+              className="min-h-24 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-100"
+              value={form.customerNotes}
+              maxLength={4000}
+              onChange={(e) => update((c) => ({ ...c, customerNotes: e.target.value }))}
+              disabled={saving}
+            />
+          </Section>
         </div>
-      </Section>
+
+        <div className="space-y-6">
+          <Section title="Primary address">
+            <AddressEditor
+              value={form.primaryAddress}
+              disabled={saving}
+              onChange={(next) => update((c) => ({ ...c, primaryAddress: next }))}
+              onBlur={() => onIdentityChange?.(form)}
+            />
+          </Section>
+
+          {form.additionalAddresses.length > 0 && (
+            <Section title="Additional addresses">
+              <div className="space-y-4">
+                {form.additionalAddresses.map((a, idx) => (
+                  <div key={a._key} className="rounded-md border border-slate-200 p-3">
+                    <AddressEditor
+                      value={a}
+                      disabled={saving}
+                      onChange={(next) =>
+                        update((c) => {
+                          const list = [...c.additionalAddresses];
+                          list[idx] = next;
+                          return { ...c, additionalAddresses: list };
+                        })
+                      }
+                    />
+                    <div className="mt-2 flex justify-end">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={saving}
+                        onClick={() =>
+                          update((c) => ({
+                            ...c,
+                            additionalAddresses: c.additionalAddresses.filter((_, i) => i !== idx),
+                          }))
+                        }
+                      >
+                        Remove address
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Section>
+          )}
+
+          <div>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={saving || form.additionalAddresses.length >= 20}
+              onClick={() =>
+                update((c) => ({
+                  ...c,
+                  additionalAddresses: [...c.additionalAddresses, newAddress()],
+                }))
+              }
+            >
+              Add another address
+            </Button>
+          </div>
+
+          <Section title="Billing address">
+            <Input
+              value={form.billingAddress}
+              placeholder="Optional single line"
+              onChange={(e) => update((c) => ({ ...c, billingAddress: e.target.value }))}
+              disabled={saving}
+            />
+          </Section>
+
+          <Section title="Tags">
+            <TagEditor
+              value={form.tags}
+              disabled={saving}
+              onChange={(next) => update((c) => ({ ...c, tags: next }))}
+            />
+          </Section>
+        </div>
+      </div>
 
       <div className="flex justify-end gap-2">
         <Button type="button" variant="secondary" onClick={onCancel} disabled={saving}>
@@ -786,7 +787,7 @@ function AddressEditor({
           disabled={disabled}
         />
       </Field>
-      <Field label="Notes" className="sm:col-span-2">
+      <Field label="Address notes" className="sm:col-span-2">
         <Input
           value={value.notes ?? ''}
           onChange={(e) => onChange({ ...value, notes: e.target.value })}

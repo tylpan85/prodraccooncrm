@@ -205,6 +205,15 @@ export function deriveDisplayName(input: {
   return `${input.firstName ?? ''} ${input.lastName ?? ''}`.trim();
 }
 
+const triStateBool = z
+  .union([z.string(), z.boolean()])
+  .optional()
+  .transform((v) => {
+    if (v === true || v === 'true') return true;
+    if (v === false || v === 'false') return false;
+    return undefined;
+  });
+
 export const customerListQuerySchema = z.object({
   q: z.string().trim().max(120).optional(),
   cursor: z.string().uuid().optional(),
@@ -217,6 +226,22 @@ export const customerListQuerySchema = z.object({
     .union([z.string(), z.boolean()])
     .optional()
     .transform((v) => v === true || v === 'true'),
+  customerType: z.enum(CUSTOMER_TYPES).optional(),
+  subcontractor: triStateBool,
+  doNotService: triStateBool,
+  sendNotifications: triStateBool,
+  tag: z.string().trim().min(1).max(40).optional(),
+  city: z.string().trim().min(1).max(100).optional(),
+  state: z
+    .string()
+    .trim()
+    .transform((v) => v.toUpperCase())
+    .refine((v) => v.length === 0 || (US_STATES as readonly string[]).includes(v), {
+      message: 'State must be a US 2-letter code',
+    })
+    .transform((v) => (v.length === 0 ? undefined : (v as UsState)))
+    .optional(),
+  leadSource: z.string().trim().min(1).max(120).optional(),
 });
 export type CustomerListQuery = z.infer<typeof customerListQuerySchema>;
 
@@ -254,6 +279,16 @@ export const customerEmailDtoSchema = z.object({
 });
 export type CustomerEmailDto = z.infer<typeof customerEmailDtoSchema>;
 
+export const customerSummaryAddressSchema = z.object({
+  id: z.string().uuid(),
+  street: z.string().nullable(),
+  unit: z.string().nullable(),
+  city: z.string().nullable(),
+  state: z.string().nullable(),
+  zip: z.string().nullable(),
+});
+export type CustomerSummaryAddress = z.infer<typeof customerSummaryAddressSchema>;
+
 export const customerSummaryDtoSchema = z.object({
   id: z.string().uuid(),
   displayName: z.string(),
@@ -263,6 +298,7 @@ export const customerSummaryDtoSchema = z.object({
   primaryPhone: z.string().nullable(),
   primaryEmail: z.string().nullable(),
   city: z.string().nullable(),
+  addresses: z.array(customerSummaryAddressSchema),
   jobsCount: z.number().int().nonnegative(),
   openInvoicesCount: z.number().int().nonnegative(),
 });

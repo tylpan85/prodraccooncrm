@@ -12,6 +12,14 @@ export interface ListCustomersParams {
   cursor?: string | null;
   limit?: number;
   archived?: boolean;
+  customerType?: 'Homeowner' | 'Business';
+  subcontractor?: boolean;
+  doNotService?: boolean;
+  sendNotifications?: boolean;
+  tag?: string;
+  city?: string;
+  state?: string;
+  leadSource?: string;
 }
 
 function listQuery(params: ListCustomersParams): string {
@@ -20,6 +28,16 @@ function listQuery(params: ListCustomersParams): string {
   if (params.cursor) sp.set('cursor', params.cursor);
   if (params.limit) sp.set('limit', String(params.limit));
   if (params.archived) sp.set('includeArchived', 'true');
+  if (params.customerType) sp.set('customerType', params.customerType);
+  if (params.subcontractor !== undefined) sp.set('subcontractor', String(params.subcontractor));
+  if (params.doNotService !== undefined) sp.set('doNotService', String(params.doNotService));
+  if (params.sendNotifications !== undefined)
+    sp.set('sendNotifications', String(params.sendNotifications));
+  if (params.tag && params.tag.trim().length > 0) sp.set('tag', params.tag.trim());
+  if (params.city && params.city.trim().length > 0) sp.set('city', params.city.trim());
+  if (params.state && params.state.trim().length > 0) sp.set('state', params.state.trim());
+  if (params.leadSource && params.leadSource.trim().length > 0)
+    sp.set('leadSource', params.leadSource.trim());
   const s = sp.toString();
   return s.length > 0 ? `?${s}` : '';
 }

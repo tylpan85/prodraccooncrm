@@ -3,7 +3,7 @@
 import type { TeamMemberDto } from '@openclaw/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Route } from 'next';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useState } from 'react';
 import { Button } from '../../../../components/ui/button';
 import { Input } from '../../../../components/ui/input';
@@ -14,7 +14,12 @@ import { settingsApi } from '../../../../lib/settings-api';
 
 export default function NewEventPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
+
+  const preselectedStartAt = searchParams.get('scheduledStartAt') ?? '';
+  const preselectedEndAt = searchParams.get('scheduledEndAt') ?? '';
+  const preselectedAssigneeId = searchParams.get('assigneeTeamMemberId');
 
   const teamMembersQuery = useQuery({
     queryKey: ['teamMembers'],
@@ -28,9 +33,9 @@ export default function NewEventPage() {
   const [name, setName] = useState('');
   const [note, setNote] = useState('');
   const [location, setLocation] = useState('');
-  const [startAt, setStartAt] = useState('');
-  const [endAt, setEndAt] = useState('');
-  const [assigneeId, setAssigneeId] = useState<string | null>(null);
+  const [startAt, setStartAt] = useState(preselectedStartAt);
+  const [endAt, setEndAt] = useState(preselectedEndAt);
+  const [assigneeId, setAssigneeId] = useState<string | null>(preselectedAssigneeId);
   const [error, setError] = useState<string | null>(null);
 
   const createMutation = useMutation({

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { noteOpsSchema } from './notes';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -20,6 +21,29 @@ const trimmedNullable = (max: number) =>
     });
 
 // ---------------------------------------------------------------------------
+// Job service items (one job → N service rows)
+// ---------------------------------------------------------------------------
+
+export const jobServiceItemInputSchema = z.object({
+  serviceId: z.string().uuid().nullable().optional(),
+  priceCents: z.number().int().min(0),
+  nameSnapshot: z.string().max(255).nullable().optional(),
+});
+
+export type JobServiceItemInput = z.infer<typeof jobServiceItemInputSchema>;
+
+export const jobServiceItemDtoSchema = z.object({
+  id: z.string().uuid(),
+  serviceId: z.string().uuid().nullable(),
+  serviceName: z.string().nullable(),
+  nameSnapshot: z.string().nullable(),
+  priceCents: z.number().int(),
+  orderIndex: z.number().int(),
+});
+
+export type JobServiceItemDto = z.infer<typeof jobServiceItemDtoSchema>;
+
+// ---------------------------------------------------------------------------
 // Create job
 // ---------------------------------------------------------------------------
 
@@ -32,6 +56,8 @@ export const createJobRequestSchema = z
     leadSource: trimmedNullable(255),
     privateNotes: trimmedNullable(10000),
     tags: z.array(z.string().max(100)).max(50).optional(),
+    services: z.array(jobServiceItemInputSchema).max(50).optional(),
+    noteOps: noteOpsSchema.optional(),
 
     scheduledStartAt: isoDatetime,
     scheduledEndAt: isoDatetime,
@@ -56,6 +82,8 @@ export const updateJobRequestSchema = z.object({
   leadSource: trimmedNullable(255),
   privateNotes: trimmedNullable(10000),
   tags: z.array(z.string().max(100)).max(50).optional(),
+  services: z.array(jobServiceItemInputSchema).max(50).optional(),
+  noteOps: noteOpsSchema.optional(),
 });
 
 export type UpdateJobRequest = z.infer<typeof updateJobRequestSchema>;
@@ -87,13 +115,37 @@ export type AssignJobRequest = z.infer<typeof assignJobRequestSchema>;
 // List query
 // ---------------------------------------------------------------------------
 
+const jobStageEnum = z.enum([
+  'scheduled',
+  'confirmation_sent',
+  'confirmed',
+  'job_done',
+  'cancelled',
+]);
+
+const intFromString = z
+  .string()
+  .optional()
+  .transform((v) => {
+    if (v === undefined || v === '') return undefined;
+    const n = Number.parseInt(v, 10);
+    return Number.isNaN(n) ? undefined : n;
+  });
+
 export const jobListQuerySchema = z.object({
   customerId: z.string().uuid().optional(),
   assigneeTeamMemberId: z.string().uuid().optional(),
+  serviceId: z.string().uuid().optional(),
+  stage: jobStageEnum.optional(),
+  tag: z.string().optional(),
   dateFrom: z.string().optional(),
   dateTo: z.string().optional(),
+  priceMinCents: intFromString,
+  priceMaxCents: intFromString,
   q: z.string().optional(),
-  cursor: z.string().uuid().optional(),
+  anchor: z.string().optional(),
+  direction: z.enum(['before', 'after']).optional(),
+  cursor: z.string().optional(),
   limit: z
     .string()
     .optional()
@@ -146,6 +198,7 @@ export const jobDtoSchema = z.object({
   jobStage: z.string(),
   finishedAt: z.string().nullable(),
   tags: z.array(z.string()),
+  services: z.array(jobServiceItemDtoSchema),
   recurringSeriesId: z.string().uuid().nullable(),
   invoice: z
     .object({

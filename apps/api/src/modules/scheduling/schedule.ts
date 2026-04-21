@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { ApiError } from '../../lib/error-envelope.js';
 import { requireAuth } from '../auth/guard.js';
+import { ensureMaterializedUntil } from './recurring.js';
 
 // ---------------------------------------------------------------------------
 // Shared lane type
@@ -68,6 +69,8 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
     const orgId = req.auth.orgId;
     const dayStart = new Date(`${query.date}T00:00:00.000Z`);
     const dayEnd = new Date(`${query.date}T23:59:59.999Z`);
+
+    await ensureMaterializedUntil(orgId, dayEnd);
 
     // Fetch all active team members for lanes
     const teamMembers = await prisma.teamMember.findMany({
@@ -219,6 +222,8 @@ export async function scheduleRoutes(fastify: FastifyInstance) {
     if (daysDiff > 42) {
       throw new ApiError(ERROR_CODES.VALIDATION_FAILED, 400, 'Range must be ≤ 42 days');
     }
+
+    await ensureMaterializedUntil(orgId, rangeEnd);
 
     const teamMembers = await prisma.teamMember.findMany({
       where: { organizationId: orgId, activeOnSchedule: true },

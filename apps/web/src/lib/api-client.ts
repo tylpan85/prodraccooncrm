@@ -1,6 +1,14 @@
 import type { ErrorEnvelope, ItemEnvelope, ItemsEnvelope } from '@openclaw/shared';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+const API_PORT = 4000;
+
+function getApiUrl(): string {
+  if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
+  if (typeof window !== 'undefined') {
+    return `${window.location.protocol}//${window.location.hostname}:${API_PORT}`;
+  }
+  return `http://localhost:${API_PORT}`;
+}
 
 export class ApiClientError extends Error {
   constructor(
@@ -23,7 +31,7 @@ interface RequestOptions {
 
 async function refreshOnce(): Promise<boolean> {
   try {
-    const res = await fetch(`${API_URL}/api/auth/refresh`, {
+    const res = await fetch(`${getApiUrl()}/api/auth/refresh`, {
       method: 'POST',
       credentials: 'include',
     });
@@ -34,7 +42,7 @@ async function refreshOnce(): Promise<boolean> {
 }
 
 export async function apiFetch<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetch(`${getApiUrl()}${path}`, {
     method: opts.method ?? 'GET',
     credentials: 'include',
     headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,

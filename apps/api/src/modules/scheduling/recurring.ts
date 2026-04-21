@@ -6,6 +6,7 @@ import {
 } from '@openclaw/recurrence';
 import {
   ERROR_CODES,
+  type JobServiceItemInput,
   attachRecurrenceRequestSchema,
   createRecurringJobRequestSchema,
   occurrenceDeleteRequestSchema,
@@ -16,6 +17,8 @@ import { z } from 'zod';
 import { auditLog } from '../../lib/audit.js';
 import { ApiError } from '../../lib/error-envelope.js';
 import { requireAuth } from '../auth/guard.js';
+import { deriveJobTotals, normalizeServiceItems, validateServiceIds } from './jobs.js';
+import { processNoteOps } from './notes.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -102,6 +105,12 @@ interface PivotJob {
   scheduledStartAt: Date;
   scheduledEndAt: Date;
   tags: { tag: string }[];
+  serviceItems: {
+    serviceId: string | null;
+    priceCents: number;
+    nameSnapshot: string | null;
+    orderIndex: number;
+  }[];
 }
 
 async function materializeTail(
@@ -111,6 +120,8 @@ async function materializeTail(
   pivot: PivotJob,
   startingIndex: number,
   ruleVersion: number,
+  horizonOverride?: Date,
+  templateJobIds?: string[],
 ): Promise<number> {
   const rule = seriesToRule(series);
   const anchorDate = new Date(
@@ -119,13 +130,15 @@ async function materializeTail(
     pivot.scheduledStartAt.getDate(),
   );
   const durationMs = pivot.scheduledEndAt.getTime() - pivot.scheduledStartAt.getTime();
-  const horizon = computeHorizonDate(rule);
+  const defaultHorizon = computeHorizonDate(rule);
+  const horizon = horizonOverride ?? defaultHorizon;
 
   // startIndex=1 skips the anchor date itself (occurrence 1 is the pivot)
-  const dates = generateOccurrenceDates(rule, anchorDate, 1000, horizon, 1);
+  const dates = generateOccurrenceDates(rule, anchorDate, 20000, horizon, 1);
 
   let occurrenceIndex = startingIndex;
   const pivotTags = pivot.tags.map((t) => t.tag);
+  const newJobIds: string[] = [];
 
   for (const date of dates) {
     const startAt = new Date(date);
@@ -138,7 +151,7 @@ async function materializeTail(
     const endAt = new Date(startAt.getTime() + durationMs);
     const jobNumber = await nextJobNumber(orgId, tx);
 
-    await tx.job.create({
+    const created = await tx.job.create({
       data: {
         organizationId: orgId,
         jobNumber,
@@ -157,10 +170,80 @@ async function materializeTail(
         generatedFromRuleVersion: ruleVersion,
         isExceptionInstance: false,
         tags: pivotTags.length > 0 ? { create: pivotTags.map((tag) => ({ tag })) } : undefined,
+        serviceItems:
+          pivot.serviceItems.length > 0
+            ? {
+                create: pivot.serviceItems.map((it) => ({
+                  serviceId: it.serviceId,
+                  priceCents: it.priceCents,
+                  nameSnapshot: it.nameSnapshot,
+                  orderIndex: it.orderIndex,
+                })),
+              }
+            : undefined,
       },
+      select: { id: true },
     });
 
+    newJobIds.push(created.id);
     occurrenceIndex++;
+  }
+
+  // Replicate `this_and_future` notes from the template jobs onto the fresh
+  // occurrences, preserving noteGroupId so future update/delete ops still
+  // target the whole group. Default template is the pivot (which carries any
+  // this_and_future notes anchored at or before the pivot). Callers that
+  // archive tail rows before rematerialization must pass those tail IDs
+  // explicitly so the tombstoned notes are still captured.
+  const sourceIds = templateJobIds && templateJobIds.length > 0 ? templateJobIds : [pivot.id];
+  if (newJobIds.length > 0) {
+    const sourceNotes = await tx.customerNote.findMany({
+      where: { organizationId: orgId, jobId: { in: sourceIds } },
+      select: {
+        noteGroupId: true,
+        content: true,
+        authorUserId: true,
+        customerId: true,
+        createdAt: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+    const templates = new Map<
+      string,
+      { content: string; authorUserId: string | null; customerId: string }
+    >();
+    for (const n of sourceNotes) {
+      if (!templates.has(n.noteGroupId)) {
+        templates.set(n.noteGroupId, {
+          content: n.content,
+          authorUserId: n.authorUserId,
+          customerId: n.customerId,
+        });
+      }
+    }
+    if (templates.size > 0) {
+      const rows: {
+        organizationId: string;
+        customerId: string;
+        jobId: string;
+        noteGroupId: string;
+        content: string;
+        authorUserId: string | null;
+      }[] = [];
+      for (const [noteGroupId, tpl] of templates) {
+        for (const jobId of newJobIds) {
+          rows.push({
+            organizationId: orgId,
+            customerId: tpl.customerId,
+            jobId,
+            noteGroupId,
+            content: tpl.content,
+            authorUserId: tpl.authorUserId,
+          });
+        }
+      }
+      await tx.customerNote.createMany({ data: rows });
+    }
   }
 
   // Update horizon on series
@@ -173,6 +256,101 @@ async function materializeTail(
   });
 
   return occurrenceIndex - startingIndex;
+}
+
+// ---------------------------------------------------------------------------
+// Lazy extension (Google Calendar-style "ends never" behavior)
+// ---------------------------------------------------------------------------
+
+/**
+ * Ensures that every "ends never" recurring series in the org that is
+ * referenced by the given view has enough occurrences materialized to cover
+ * `targetDate`. No-op for series with a fixed end (`on_date` /
+ * `after_n_occurrences`) — those must not be extended past their user-set end.
+ *
+ * Safe to call often; skips series whose horizon already covers targetDate.
+ */
+export async function ensureMaterializedUntil(
+  orgId: string,
+  targetDate: Date,
+  opts: { customerId?: string; seriesIds?: string[] } = {},
+): Promise<void> {
+  const where: Prisma.RecurringSeriesWhereInput = {
+    organizationId: orgId,
+    recurrenceEnabled: true,
+    recurrenceEndMode: 'never',
+    OR: [
+      { materializationHorizonUntil: null },
+      { materializationHorizonUntil: { lt: targetDate } },
+    ],
+  };
+  if (opts.seriesIds && opts.seriesIds.length > 0) {
+    where.id = { in: opts.seriesIds };
+  }
+  if (opts.customerId) {
+    where.sourceJob = { customerId: opts.customerId };
+  }
+
+  const series = await prisma.recurringSeries.findMany({ where });
+  if (series.length === 0) return;
+
+  // Extend past the target by 6 months so successive view-requests in the
+  // same horizon window skip the check entirely instead of re-triggering
+  // a 1-day incremental extension for every series on every request.
+  const extendTo = new Date(targetDate);
+  extendTo.setMonth(extendTo.getMonth() + 6);
+
+  const CONCURRENCY = 10;
+  for (let i = 0; i < series.length; i += CONCURRENCY) {
+    const batch = series.slice(i, i + CONCURRENCY);
+    await Promise.all(
+      batch.map(async (s) => {
+        const lastOccurrence = await prisma.job.findFirst({
+          where: { recurringSeriesId: s.id, deletedFromSeriesAt: null },
+          orderBy: { occurrenceIndex: 'desc' },
+          include: {
+            tags: true,
+            serviceItems: { orderBy: { orderIndex: 'asc' } },
+          },
+        });
+        if (!lastOccurrence || !lastOccurrence.scheduledStartAt || !lastOccurrence.scheduledEndAt) {
+          return;
+        }
+
+        await prisma.$transaction(async (tx) => {
+          const pivot: PivotJob = {
+            id: lastOccurrence.id,
+            customerId: lastOccurrence.customerId,
+            customerAddressId: lastOccurrence.customerAddressId,
+            serviceId: lastOccurrence.serviceId,
+            titleOrSummary: lastOccurrence.titleOrSummary,
+            priceCents: lastOccurrence.priceCents,
+            leadSource: lastOccurrence.leadSource,
+            privateNotes: lastOccurrence.privateNotes,
+            assigneeTeamMemberId: lastOccurrence.assigneeTeamMemberId,
+            scheduledStartAt: lastOccurrence.scheduledStartAt as Date,
+            scheduledEndAt: lastOccurrence.scheduledEndAt as Date,
+            tags: lastOccurrence.tags,
+            serviceItems: lastOccurrence.serviceItems.map((it) => ({
+              serviceId: it.serviceId,
+              priceCents: it.priceCents,
+              nameSnapshot: it.nameSnapshot,
+              orderIndex: it.orderIndex,
+            })),
+          };
+          await materializeTail(
+            tx,
+            orgId,
+            s,
+            pivot,
+            (lastOccurrence.occurrenceIndex ?? 1) + 1,
+            s.recurrenceRuleVersion,
+            extendTo,
+          );
+        });
+      }),
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +405,10 @@ export async function recurringRoutes(fastify: FastifyInstance) {
 
     const job = await prisma.job.findFirst({
       where: { id, organizationId: orgId },
-      include: { tags: true },
+      include: {
+        tags: true,
+        serviceItems: { orderBy: { orderIndex: 'asc' } },
+      },
     });
     if (!job) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
     if (job.recurringSeriesId) {
@@ -286,6 +467,12 @@ export async function recurringRoutes(fastify: FastifyInstance) {
         scheduledStartAt: job.scheduledStartAt as Date,
         scheduledEndAt: job.scheduledEndAt as Date,
         tags: job.tags,
+        serviceItems: job.serviceItems.map((it) => ({
+          serviceId: it.serviceId,
+          priceCents: it.priceCents,
+          nameSnapshot: it.nameSnapshot,
+          orderIndex: it.orderIndex,
+        })),
       };
 
       const generatedCount = await materializeTail(tx, orgId, series, pivot, 2, 1);
@@ -335,6 +522,14 @@ export async function recurringRoutes(fastify: FastifyInstance) {
 
     const tags = body.job.tags ? dedupeTags(body.job.tags) : [];
 
+    const serviceItemsInput = normalizeServiceItems({
+      services: body.job.services ?? null,
+      serviceId: body.job.serviceId ?? null,
+      priceCents: body.job.priceCents ?? 0,
+    });
+    await validateServiceIds(serviceItemsInput, orgId);
+    const { totalCents, primaryServiceId } = deriveJobTotals(serviceItemsInput);
+
     const result = await prisma.$transaction(async (tx) => {
       const jobNumber = await nextJobNumber(orgId, tx);
 
@@ -344,17 +539,31 @@ export async function recurringRoutes(fastify: FastifyInstance) {
           jobNumber,
           customerId: body.customerId,
           customerAddressId: body.job.customerAddressId,
-          serviceId: body.job.serviceId ?? null,
+          serviceId: primaryServiceId,
           titleOrSummary: body.job.titleOrSummary ?? null,
-          priceCents: body.job.priceCents ?? 0,
+          priceCents: totalCents,
           leadSource: body.job.leadSource ?? null,
           privateNotes: body.job.privateNotes ?? null,
           scheduledStartAt: new Date(body.schedule.scheduledStartAt),
           scheduledEndAt: new Date(body.schedule.scheduledEndAt),
           assigneeTeamMemberId: body.schedule.assigneeTeamMemberId ?? null,
           tags: tags.length > 0 ? { create: tags.map((tag) => ({ tag })) } : undefined,
+          serviceItems:
+            serviceItemsInput.length > 0
+              ? {
+                  create: serviceItemsInput.map((it, idx) => ({
+                    serviceId: it.serviceId ?? null,
+                    priceCents: it.priceCents,
+                    nameSnapshot: it.nameSnapshot ?? null,
+                    orderIndex: idx,
+                  })),
+                }
+              : undefined,
         },
-        include: { tags: true },
+        include: {
+          tags: true,
+          serviceItems: { orderBy: { orderIndex: 'asc' } },
+        },
       });
 
       const series = await tx.recurringSeries.create({
@@ -397,9 +606,29 @@ export async function recurringRoutes(fastify: FastifyInstance) {
         scheduledStartAt: sourceJob.scheduledStartAt as Date,
         scheduledEndAt: sourceJob.scheduledEndAt as Date,
         tags: sourceJob.tags,
+        serviceItems: sourceJob.serviceItems.map((it) => ({
+          serviceId: it.serviceId,
+          priceCents: it.priceCents,
+          nameSnapshot: it.nameSnapshot,
+          orderIndex: it.orderIndex,
+        })),
       };
 
       const generatedCount = await materializeTail(tx, orgId, series, pivot, 2, 1);
+
+      const noteMappings = body.job.noteOps && body.job.noteOps.length > 0
+        ? await processNoteOps({
+            tx,
+            orgId,
+            jobId: sourceJob.id,
+            customerId: body.customerId,
+            authorUserId: actorUserId,
+            recurringSeriesId: series.id,
+            occurrenceIndex: 1,
+            scope: 'this_and_future',
+            noteOps: body.job.noteOps,
+          })
+        : [];
 
       await auditLog(tx, {
         organizationId: orgId,
@@ -409,7 +638,7 @@ export async function recurringRoutes(fastify: FastifyInstance) {
         action: 'create',
       });
 
-      return { sourceJobId: sourceJob.id, seriesId: series.id, generatedCount };
+      return { sourceJobId: sourceJob.id, seriesId: series.id, generatedCount, noteMappings };
     });
 
     return reply.status(201).send({
@@ -418,6 +647,7 @@ export async function recurringRoutes(fastify: FastifyInstance) {
         seriesId: result.seriesId,
         generatedCount: result.generatedCount,
       },
+      noteMappings: result.noteMappings,
     });
   });
 
@@ -576,21 +806,68 @@ export async function recurringRoutes(fastify: FastifyInstance) {
       throw new ApiError(ERROR_CODES.INVALID_DATE_RANGE, 400, 'End must be after start');
     }
 
+    const servicesChanging = changes.services !== undefined;
+    let servicesInput: JobServiceItemInput[] = [];
+    let derivedTotals: { totalCents: number; primaryServiceId: string | null } | null = null;
+    if (servicesChanging) {
+      servicesInput = normalizeServiceItems({
+        services: (changes.services as JobServiceItemInput[] | null | undefined) ?? null,
+        serviceId: null,
+        priceCents: 0,
+      });
+      await validateServiceIds(servicesInput, orgId);
+      derivedTotals = deriveJobTotals(servicesInput);
+    }
+    const servicesWrite = servicesChanging
+      ? {
+          serviceItems: {
+            deleteMany: {},
+            create: servicesInput.map((it, idx) => ({
+              serviceId: it.serviceId ?? null,
+              priceCents: it.priceCents,
+              nameSnapshot: it.nameSnapshot ?? null,
+              orderIndex: idx,
+            })),
+          },
+        }
+      : undefined;
+
     if (body.scope === 'this') {
       // scope=this: update only this occurrence, mark as exception
-      const data = buildJobUpdateData(changes);
+      const data = buildJobUpdateData(changes, derivedTotals);
       data.isExceptionInstance = true;
 
       const tags = changes.tags ? dedupeTags(changes.tags) : undefined;
-      const updated = await prisma.job.update({
-        where: { id },
-        data: {
-          ...data,
-          ...(tags ? { tags: { deleteMany: {}, create: tags.map((tag) => ({ tag })) } } : {}),
-        },
+
+      const { updated, noteMappings } = await prisma.$transaction(async (tx) => {
+        const updated = await tx.job.update({
+          where: { id },
+          data: {
+            ...data,
+            ...(tags ? { tags: { deleteMany: {}, create: tags.map((tag) => ({ tag })) } } : {}),
+            ...(servicesWrite ?? {}),
+          },
+        });
+
+        const noteMappings =
+          body.noteOps && body.noteOps.length > 0
+            ? await processNoteOps({
+                tx,
+                orgId,
+                jobId: id,
+                customerId: job.customerId,
+                authorUserId: req.auth!.sub,
+                recurringSeriesId: job.recurringSeriesId,
+                occurrenceIndex: job.occurrenceIndex,
+                scope: 'this',
+                noteOps: body.noteOps,
+              })
+            : [];
+
+        return { updated, noteMappings };
       });
 
-      return reply.send({ item: { id: updated.id, scope: 'this' } });
+      return reply.send({ item: { id: updated.id, scope: 'this', noteMappings } });
     }
 
     // scope=this_and_future
@@ -601,8 +878,18 @@ export async function recurringRoutes(fastify: FastifyInstance) {
 
     const nextRuleVersion = series.recurrenceRuleVersion + 1;
     const hasNewRule = !!body.recurrenceRule;
-    const hasScheduleMutation =
-      changes.scheduledStartAt !== undefined || changes.scheduledEndAt !== undefined;
+    // Compare at minute precision — the client's datetime-local input drops
+    // sub-minute bits, so a round-tripped unchanged value would otherwise look
+    // mutated and trigger rematerialization that wipes replicated notes.
+    const toMinute = (d: Date) => Math.floor(d.getTime() / 60000);
+    const startChanged =
+      changes.scheduledStartAt !== undefined &&
+      toMinute(new Date(changes.scheduledStartAt)) !== toMinute(job.scheduledStartAt);
+    const endChanged =
+      changes.scheduledEndAt !== undefined &&
+      job.scheduledEndAt !== null &&
+      toMinute(new Date(changes.scheduledEndAt)) !== toMinute(job.scheduledEndAt);
+    const hasScheduleMutation = startChanged || endChanged;
     const requiresRematerialization = hasNewRule || hasScheduleMutation;
 
     const result = await prisma.$transaction(async (tx) => {
@@ -630,7 +917,7 @@ export async function recurringRoutes(fastify: FastifyInstance) {
       await tx.recurringSeries.update({ where: { id: series.id }, data: ruleUpdate });
 
       // Update pivot occurrence
-      const pivotData = buildJobUpdateData(changes);
+      const pivotData = buildJobUpdateData(changes, derivedTotals);
       pivotData.generatedFromRuleVersion = nextRuleVersion;
       pivotData.isExceptionInstance = false;
 
@@ -687,11 +974,45 @@ export async function recurringRoutes(fastify: FastifyInstance) {
         data: {
           ...pivotData,
           ...(tags ? { tags: { deleteMany: {}, create: tags.map((tag) => ({ tag })) } } : {}),
+          ...(servicesWrite ?? {}),
         },
-        include: { tags: true },
+        include: {
+          tags: true,
+          serviceItems: { orderBy: { orderIndex: 'asc' } },
+        },
       });
 
+      // Note: processNoteOps runs AFTER any tail archive/rematerialization below,
+      // so replicated notes attach to the freshly regenerated occurrences rather
+      // than to rows that are about to be soft-deleted.
+      const runNoteOps = async () =>
+        body.noteOps && body.noteOps.length > 0
+          ? await processNoteOps({
+              tx,
+              orgId,
+              jobId: id,
+              customerId: job.customerId,
+              authorUserId: req.auth!.sub,
+              recurringSeriesId: job.recurringSeriesId,
+              occurrenceIndex: job.occurrenceIndex,
+              scope: 'this_and_future',
+              noteOps: body.noteOps,
+            })
+          : [];
+
       if (requiresRematerialization) {
+        // Capture tail job IDs BEFORE archival so materializeTail can still
+        // find and carry forward notes that live on soon-to-be-tombstoned
+        // rows (which its default pivot-only lookup would miss).
+        const oldTailJobs = await tx.job.findMany({
+          where: {
+            recurringSeriesId: series.id,
+            occurrenceIndex: { gt: job.occurrenceIndex ?? 0 },
+            deletedFromSeriesAt: null,
+          },
+          select: { id: true },
+        });
+
         // Archive tail (soft-delete occurrences after pivot)
         await tx.job.updateMany({
           where: {
@@ -720,6 +1041,12 @@ export async function recurringRoutes(fastify: FastifyInstance) {
           scheduledStartAt: updatedPivot.scheduledStartAt as Date,
           scheduledEndAt: updatedPivot.scheduledEndAt as Date,
           tags: updatedPivot.tags,
+          serviceItems: updatedPivot.serviceItems.map((it) => ({
+            serviceId: it.serviceId,
+            priceCents: it.priceCents,
+            nameSnapshot: it.nameSnapshot,
+            orderIndex: it.orderIndex,
+          })),
         };
 
         const generatedCount = await materializeTail(
@@ -729,18 +1056,21 @@ export async function recurringRoutes(fastify: FastifyInstance) {
           pivot,
           (job.occurrenceIndex ?? 1) + 1,
           nextRuleVersion,
+          undefined,
+          [pivot.id, ...oldTailJobs.map((j) => j.id)],
         );
 
-        return { regeneratedCount: generatedCount };
+        const noteMappings = await runNoteOps();
+        return { regeneratedCount: generatedCount, noteMappings };
       }
 
       // Non-schedule change: copy changes to all future non-exception occurrences
-      const futureData = buildJobUpdateData(changes);
+      const futureData = buildJobUpdateData(changes, derivedTotals);
       futureData.generatedFromRuleVersion = nextRuleVersion;
       futureData.isExceptionInstance = false;
 
-      // For tags, need per-row updates
-      if (tags) {
+      // For tags or services replacement, need per-row updates (relation writes)
+      if (tags || servicesChanging) {
         const futureJobs = await tx.job.findMany({
           where: {
             recurringSeriesId: series.id,
@@ -755,12 +1085,16 @@ export async function recurringRoutes(fastify: FastifyInstance) {
             where: { id: fj.id },
             data: {
               ...futureData,
-              tags: { deleteMany: {}, create: tags.map((tag) => ({ tag })) },
+              ...(tags
+                ? { tags: { deleteMany: {}, create: tags.map((tag) => ({ tag })) } }
+                : {}),
+              ...(servicesWrite ?? {}),
             },
           });
         }
 
-        return { updatedFutureCount: futureJobs.length };
+        const noteMappings = await runNoteOps();
+        return { updatedFutureCount: futureJobs.length, noteMappings };
       }
 
       const updateResult = await tx.job.updateMany({
@@ -772,7 +1106,8 @@ export async function recurringRoutes(fastify: FastifyInstance) {
         data: futureData,
       });
 
-      return { updatedFutureCount: updateResult.count };
+      const noteMappings = await runNoteOps();
+      return { updatedFutureCount: updateResult.count, noteMappings };
     });
 
     return reply.send({ item: { id, scope: 'this_and_future', ...result } });
@@ -787,6 +1122,7 @@ export async function recurringRoutes(fastify: FastifyInstance) {
 
     const job = await prisma.job.findFirst({
       where: { id, organizationId: orgId },
+      include: { invoice: { select: { id: true } } },
     });
     if (!job) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
     if (!job.recurringSeriesId) {
@@ -797,21 +1133,45 @@ export async function recurringRoutes(fastify: FastifyInstance) {
     }
 
     if (body.scope === 'this') {
+      if (job.jobStage === 'job_done' && job.invoice) {
+        throw new ApiError(
+          ERROR_CODES.VALIDATION_FAILED,
+          400,
+          `Job #${job.jobNumber} cannot be deleted because it is marked as done`,
+        );
+      }
       await prisma.job.update({
         where: { id },
         data: { deletedFromSeriesAt: new Date(), isExceptionInstance: false },
       });
-      return reply.send({ item: { id, scope: 'this', deletedCount: 1 } });
+      return reply.send({ item: { id, scope: 'this', deletedCount: 1, skippedJobs: [] } });
     }
 
     // scope=this_and_future
     const result = await prisma.$transaction(async (tx) => {
-      const updateResult = await tx.job.updateMany({
+      const rangeJobs = await tx.job.findMany({
         where: {
           recurringSeriesId: job.recurringSeriesId,
           occurrenceIndex: { gte: job.occurrenceIndex ?? 0 },
           deletedFromSeriesAt: null,
         },
+        select: {
+          id: true,
+          jobNumber: true,
+          jobStage: true,
+          invoice: { select: { id: true } },
+        },
+      });
+
+      const skippedJobs = rangeJobs
+        .filter((j) => j.jobStage === 'job_done' && j.invoice)
+        .map((j) => ({ id: j.id, jobNumber: j.jobNumber }));
+      const deletableIds = rangeJobs
+        .filter((j) => !(j.jobStage === 'job_done' && j.invoice))
+        .map((j) => j.id);
+
+      const updateResult = await tx.job.updateMany({
+        where: { id: { in: deletableIds } },
         data: { deletedFromSeriesAt: new Date(), isExceptionInstance: false },
       });
 
@@ -820,11 +1180,16 @@ export async function recurringRoutes(fastify: FastifyInstance) {
         data: { recurrenceEnabled: false },
       });
 
-      return { deletedCount: updateResult.count };
+      return { deletedCount: updateResult.count, skippedJobs };
     });
 
     return reply.send({
-      item: { id, scope: 'this_and_future', deletedCount: result.deletedCount },
+      item: {
+        id,
+        scope: 'this_and_future',
+        deletedCount: result.deletedCount,
+        skippedJobs: result.skippedJobs,
+      },
     });
   });
 
@@ -855,7 +1220,10 @@ export async function recurringRoutes(fastify: FastifyInstance) {
           deletedFromSeriesAt: null,
         },
         orderBy: { occurrenceIndex: 'desc' },
-        include: { tags: true },
+        include: {
+          tags: true,
+          serviceItems: { orderBy: { orderIndex: 'asc' } },
+        },
       });
       if (!lastOccurrence || !lastOccurrence.scheduledStartAt || !lastOccurrence.scheduledEndAt) {
         continue;
@@ -875,6 +1243,12 @@ export async function recurringRoutes(fastify: FastifyInstance) {
           scheduledStartAt: lastOccurrence.scheduledStartAt as Date,
           scheduledEndAt: lastOccurrence.scheduledEndAt as Date,
           tags: lastOccurrence.tags,
+          serviceItems: lastOccurrence.serviceItems.map((it) => ({
+            serviceId: it.serviceId,
+            priceCents: it.priceCents,
+            nameSnapshot: it.nameSnapshot,
+            orderIndex: it.orderIndex,
+          })),
         };
 
         return materializeTail(
@@ -898,12 +1272,13 @@ export async function recurringRoutes(fastify: FastifyInstance) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function buildJobUpdateData(changes: Record<string, unknown>): Record<string, unknown> {
+function buildJobUpdateData(
+  changes: Record<string, unknown>,
+  servicesOverride?: { totalCents: number; primaryServiceId: string | null } | null,
+): Record<string, unknown> {
   const data: Record<string, unknown> = {};
   if (changes.customerAddressId !== undefined) data.customerAddressId = changes.customerAddressId;
-  if (changes.serviceId !== undefined) data.serviceId = changes.serviceId;
   if (changes.titleOrSummary !== undefined) data.titleOrSummary = changes.titleOrSummary;
-  if (changes.priceCents !== undefined) data.priceCents = changes.priceCents;
   if (changes.leadSource !== undefined) data.leadSource = changes.leadSource;
   if (changes.privateNotes !== undefined) data.privateNotes = changes.privateNotes;
   if (changes.scheduledStartAt !== undefined) {
@@ -914,6 +1289,13 @@ function buildJobUpdateData(changes: Record<string, unknown>): Record<string, un
   }
   if (changes.assigneeTeamMemberId !== undefined) {
     data.assigneeTeamMemberId = changes.assigneeTeamMemberId;
+  }
+  if (servicesOverride) {
+    data.serviceId = servicesOverride.primaryServiceId;
+    data.priceCents = servicesOverride.totalCents;
+  } else {
+    if (changes.serviceId !== undefined) data.serviceId = changes.serviceId;
+    if (changes.priceCents !== undefined) data.priceCents = changes.priceCents;
   }
   return data;
 }

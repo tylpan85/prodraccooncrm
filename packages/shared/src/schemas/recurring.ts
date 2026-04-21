@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { noteOpsSchema } from './notes';
+import { jobServiceItemInputSchema } from './jobs';
 
 // ---------------------------------------------------------------------------
 // Recurrence rule input (shared by create-series and edit-this-and-future)
@@ -92,6 +94,8 @@ export const createRecurringJobRequestSchema = z.object({
     leadSource: trimmedNullable(255),
     privateNotes: trimmedNullable(10000),
     tags: z.array(z.string().max(100)).max(50).optional(),
+    services: z.array(jobServiceItemInputSchema).max(50).optional(),
+    noteOps: noteOpsSchema.optional(),
   }),
   schedule: z
     .object({
@@ -123,11 +127,13 @@ export const occurrenceEditRequestSchema = z
       leadSource: trimmedNullable(255),
       privateNotes: trimmedNullable(10000),
       tags: z.array(z.string().max(100)).max(50).optional(),
+      services: z.array(jobServiceItemInputSchema).max(50).optional(),
       scheduledStartAt: isoDatetime.optional(),
       scheduledEndAt: isoDatetime.optional(),
       assigneeTeamMemberId: z.string().uuid().nullable().optional(),
     }),
     recurrenceRule: recurrenceRuleInputSchema.optional(),
+    noteOps: noteOpsSchema.optional(),
   })
   .superRefine((data, ctx) => {
     if (data.scope === 'this' && data.recurrenceRule) {

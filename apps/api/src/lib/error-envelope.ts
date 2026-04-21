@@ -33,6 +33,18 @@ export function errorHandler(err: FastifyError, _req: FastifyRequest, reply: Fas
     return;
   }
 
+  // Pass through Fastify/plugin 4xx errors (rate-limit 429, not-found 404, payload-too-large 413, etc.)
+  // so clients see the real HTTP status and message instead of a generic 500.
+  if (typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 500) {
+    reply.status(err.statusCode).send({
+      error: {
+        code: err.code ?? 'CLIENT_ERROR',
+        message: err.message,
+      },
+    });
+    return;
+  }
+
   reply.log.error({ err }, 'unhandled error');
   reply.status(500).send({
     error: {

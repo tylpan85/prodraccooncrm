@@ -2,6 +2,7 @@ import { type Prisma, type PrismaClient, prisma } from '@openclaw/db';
 import {
   type CreateJobRequest,
   ERROR_CODES,
+  type JobServiceItemInput,
   assignJobRequestSchema,
   createJobRequestSchema,
   jobListQuerySchema,
@@ -13,6 +14,8 @@ import { z } from 'zod';
 import { auditLog } from '../../lib/audit.js';
 import { ApiError } from '../../lib/error-envelope.js';
 import { requireAuth } from '../auth/guard.js';
+import { processNoteOps } from './notes.js';
+import { ensureMaterializedUntil } from './recurring.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,6 +49,10 @@ const JOB_INCLUDE = {
   service: { select: { name: true } },
   assignee: { select: { displayName: true } },
   tags: true,
+  serviceItems: {
+    include: { service: { select: { name: true } } },
+    orderBy: { orderIndex: 'asc' },
+  },
   invoice: {
     select: { id: true, invoiceNumber: true, status: true, totalCents: true },
   },
@@ -74,6 +81,14 @@ function jobDto(j: JobRecord) {
     jobStage: j.jobStage,
     finishedAt: j.finishedAt?.toISOString() ?? null,
     tags: j.tags.map((t) => t.tag),
+    services: j.serviceItems.map((item) => ({
+      id: item.id,
+      serviceId: item.serviceId,
+      serviceName: item.service?.name ?? null,
+      nameSnapshot: item.nameSnapshot,
+      priceCents: item.priceCents,
+      orderIndex: item.orderIndex,
+    })),
     recurringSeriesId: j.recurringSeriesId,
     invoice: j.invoice
       ? {
@@ -104,6 +119,36 @@ function dedupeTags(tags: string[]): string[] {
 
 const idParam = z.object({ id: z.string().uuid() });
 const customerIdParam = z.object({ customerId: z.string().uuid() });
+
+const customerJobsQuerySchema = z.object({
+  anchor: z.string().optional(),
+  direction: z.enum(['before', 'after']).optional(),
+  cursor: z.string().optional(),
+  limit: z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (!v) return undefined;
+      const n = Number.parseInt(v, 10);
+      if (Number.isNaN(n) || n < 1) return undefined;
+      return Math.min(n, 200);
+    }),
+});
+
+function encodeJobsCursor(startAt: Date, id: string): string {
+  return `${startAt.getTime()}:${id}`;
+}
+
+function parseJobsCursor(raw?: string): { startAt: Date; id: string } | null {
+  if (!raw) return null;
+  const idx = raw.indexOf(':');
+  if (idx <= 0) return null;
+  const tsStr = raw.slice(0, idx);
+  const id = raw.slice(idx + 1);
+  const ts = Number.parseInt(tsStr, 10);
+  if (!id || Number.isNaN(ts)) return null;
+  return { startAt: new Date(ts), id };
+}
 
 // ---------------------------------------------------------------------------
 // Validation helpers
@@ -155,6 +200,75 @@ async function checkDnsBlock(customerId: string, orgId: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Service item helpers
+// ---------------------------------------------------------------------------
+
+export function normalizeServiceItems(body: {
+  services?: JobServiceItemInput[] | null;
+  serviceId?: string | null;
+  priceCents?: number;
+}): JobServiceItemInput[] {
+  if (body.services && body.services.length > 0) {
+    return body.services.map((item) => ({
+      serviceId: item.serviceId ?? null,
+      priceCents: item.priceCents,
+      nameSnapshot: item.nameSnapshot ?? null,
+    }));
+  }
+  return [
+    {
+      serviceId: body.serviceId ?? null,
+      priceCents: body.priceCents ?? 0,
+      nameSnapshot: null,
+    },
+  ];
+}
+
+export async function validateServiceIds(
+  items: JobServiceItemInput[],
+  orgId: string,
+): Promise<void> {
+  const ids = Array.from(
+    new Set(items.map((i) => i.serviceId).filter((id): id is string => !!id)),
+  );
+  if (ids.length === 0) return;
+  const found = await prisma.service.findMany({
+    where: { id: { in: ids }, organizationId: orgId },
+    select: { id: true },
+  });
+  if (found.length !== ids.length) {
+    throw new ApiError(ERROR_CODES.VALIDATION_FAILED, 400, 'One or more services not found');
+  }
+}
+
+export function deriveJobTotals(items: JobServiceItemInput[]): {
+  totalCents: number;
+  primaryServiceId: string | null;
+} {
+  return {
+    totalCents: items.reduce((sum, i) => sum + i.priceCents, 0),
+    primaryServiceId: items[0]?.serviceId ?? null,
+  };
+}
+
+function buildLineItemsFromJob(job: JobRecord) {
+  if (job.serviceItems.length > 0) {
+    return job.serviceItems.map((item) => ({
+      description: item.service?.name ?? item.nameSnapshot ?? 'Service',
+      priceCents: item.priceCents,
+      orderIndex: item.orderIndex,
+    }));
+  }
+  return [
+    {
+      description: job.titleOrSummary ?? 'Service',
+      priceCents: job.priceCents,
+      orderIndex: 0,
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
 
@@ -190,21 +304,15 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       await validateAssignee(body.assigneeTeamMemberId, req.auth.orgId);
     }
 
-    if (body.serviceId) {
-      const svc = await prisma.service.findFirst({
-        where: { id: body.serviceId, organizationId: req.auth.orgId },
-        select: { name: true },
-      });
-      if (!svc) {
-        throw new ApiError(ERROR_CODES.VALIDATION_FAILED, 400, 'Service not found');
-      }
-    }
+    const serviceItems = normalizeServiceItems(body);
+    await validateServiceIds(serviceItems, req.auth.orgId);
+    const { totalCents, primaryServiceId } = deriveJobTotals(serviceItems);
 
     const tags = body.tags ? dedupeTags(body.tags) : [];
     const orgId = req.auth.orgId;
     const actorUserId = req.auth.sub;
 
-    const job = await prisma.$transaction(async (tx) => {
+    const result = await prisma.$transaction(async (tx) => {
       const jobNumber = await nextJobNumber(orgId, tx);
 
       const created = await tx.job.create({
@@ -213,18 +321,41 @@ export async function jobsRoutes(fastify: FastifyInstance) {
           jobNumber,
           customerId,
           customerAddressId: body.customerAddressId,
-          serviceId: body.serviceId ?? null,
+          serviceId: primaryServiceId,
           titleOrSummary: body.titleOrSummary ?? null,
-          priceCents: body.priceCents ?? 0,
+          priceCents: totalCents,
           leadSource: body.leadSource ?? null,
           privateNotes: body.privateNotes ?? null,
           scheduledStartAt: new Date(body.scheduledStartAt),
           scheduledEndAt: new Date(body.scheduledEndAt),
           assigneeTeamMemberId: body.assigneeTeamMemberId ?? null,
           tags: tags.length > 0 ? { create: tags.map((tag) => ({ tag })) } : undefined,
+          serviceItems: {
+            create: serviceItems.map((item, idx) => ({
+              serviceId: item.serviceId ?? null,
+              priceCents: item.priceCents,
+              nameSnapshot: item.nameSnapshot ?? null,
+              orderIndex: idx,
+            })),
+          },
         },
         include: JOB_INCLUDE,
       });
+
+      const noteMappings = body.noteOps && body.noteOps.length > 0
+        ? await processNoteOps({
+            tx,
+            orgId,
+            jobId: created.id,
+            customerId,
+            authorUserId: actorUserId,
+            recurringSeriesId: null,
+            occurrenceIndex: null,
+            scope: 'this',
+            noteOps: body.noteOps,
+          })
+        : [];
+
       await auditLog(tx, {
         organizationId: orgId,
         actorUserId,
@@ -233,51 +364,72 @@ export async function jobsRoutes(fastify: FastifyInstance) {
         action: 'create',
         payload: { jobNumber: created.jobNumber, customerId },
       });
-      return created;
+      return { job: created, noteMappings };
     });
 
-    return reply.code(201).send({ item: jobDto(job) });
+    return reply.code(201).send({ item: jobDto(result.job), noteMappings: result.noteMappings });
   });
 
-  // ── List ──────────────────────────────────────────────────────────────
+  // ── List (with bidirectional pagination + filters) ────────────────────
   fastify.get('/api/jobs', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
     const query = jobListQuerySchema.parse(req.query);
+    const orgId = req.auth.orgId;
 
-    const where: Prisma.JobWhereInput = {
-      organizationId: req.auth.orgId,
+    const DEFAULT_BEFORE = 15;
+    const DEFAULT_AFTER = 25;
+    const DEFAULT_PAGE = 15;
+
+    // Build base filter from query params (applies to all branches).
+    const filters: Prisma.JobWhereInput = {
+      organizationId: orgId,
       deletedFromSeriesAt: null,
     };
-    if (query.customerId) where.customerId = query.customerId;
-    if (query.assigneeTeamMemberId) where.assigneeTeamMemberId = query.assigneeTeamMemberId;
+    if (query.customerId) filters.customerId = query.customerId;
+    if (query.assigneeTeamMemberId) filters.assigneeTeamMemberId = query.assigneeTeamMemberId;
+    if (query.serviceId) filters.serviceId = query.serviceId;
+    if (query.stage) filters.jobStage = query.stage;
+    if (query.tag) {
+      filters.tags = { some: { tag: { equals: query.tag, mode: 'insensitive' } } };
+    }
     if (query.dateFrom || query.dateTo) {
-      where.scheduledStartAt = {};
-      if (query.dateFrom) where.scheduledStartAt.gte = new Date(query.dateFrom);
-      if (query.dateTo) where.scheduledStartAt.lte = new Date(query.dateTo);
+      filters.scheduledStartAt = {};
+      if (query.dateFrom) filters.scheduledStartAt.gte = new Date(query.dateFrom);
+      if (query.dateTo) filters.scheduledStartAt.lte = new Date(query.dateTo);
+    }
+    if (query.priceMinCents !== undefined || query.priceMaxCents !== undefined) {
+      filters.priceCents = {};
+      if (query.priceMinCents !== undefined) filters.priceCents.gte = query.priceMinCents;
+      if (query.priceMaxCents !== undefined) filters.priceCents.lte = query.priceMaxCents;
     }
     if (query.q && query.q.trim().length > 0) {
       const q = query.q.trim();
-      where.OR = [
+      filters.OR = [
         { titleOrSummary: { contains: q, mode: 'insensitive' } },
         { jobNumber: { contains: q, mode: 'insensitive' } },
         { customer: { displayName: { contains: q, mode: 'insensitive' } } },
       ];
     }
 
-    const limit = query.limit;
-    const rows = await prisma.job.findMany({
-      where,
-      orderBy: [{ scheduledStartAt: 'asc' }, { id: 'asc' }],
-      take: limit + 1,
-      ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
-      include: {
-        customer: { select: { displayName: true } },
-        assignee: { select: { displayName: true } },
-      },
+    // Lazily materialize recurring jobs up to the furthest point we may show.
+    const materializeTarget = query.dateTo
+      ? new Date(query.dateTo)
+      : (() => {
+          const d = new Date();
+          d.setFullYear(d.getFullYear() + 2);
+          return d;
+        })();
+    await ensureMaterializedUntil(orgId, materializeTarget, {
+      customerId: query.customerId,
     });
 
-    const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map((j) => ({
+    const jobInclude = {
+      customer: { select: { displayName: true } },
+      assignee: { select: { displayName: true } },
+    } as const;
+    type JobWithRel = Prisma.JobGetPayload<{ include: typeof jobInclude }>;
+
+    const mapJob = (j: JobWithRel) => ({
       id: j.id,
       jobNumber: j.jobNumber,
       customerId: j.customerId,
@@ -290,11 +442,117 @@ export async function jobsRoutes(fastify: FastifyInstance) {
       assigneeDisplayName: j.assignee?.displayName ?? null,
       jobStage: j.jobStage,
       finishedAt: j.finishedAt?.toISOString() ?? null,
-    }));
+    });
+
+    const fetchBefore = async (pivot: Date, pivotId: string | null, limit: number) => {
+      const where: Prisma.JobWhereInput = pivotId
+        ? {
+            AND: [
+              filters,
+              {
+                OR: [
+                  { scheduledStartAt: { lt: pivot } },
+                  { scheduledStartAt: pivot, id: { lt: pivotId } },
+                ],
+              },
+            ],
+          }
+        : { AND: [filters, { scheduledStartAt: { lt: pivot } }] };
+      const rows = await prisma.job.findMany({
+        where,
+        orderBy: [{ scheduledStartAt: 'desc' }, { id: 'desc' }],
+        take: limit + 1,
+        include: jobInclude,
+      });
+      const hasMore = rows.length > limit;
+      const sliced = rows.slice(0, limit);
+      const tail = sliced[sliced.length - 1];
+      const nextCursor = hasMore && tail ? encodeJobsCursor(tail.scheduledStartAt, tail.id) : null;
+      return { rows: sliced, hasMore, nextCursor };
+    };
+
+    const fetchAfter = async (
+      pivot: Date,
+      pivotId: string | null,
+      limit: number,
+      inclusive: boolean,
+    ) => {
+      const where: Prisma.JobWhereInput = pivotId
+        ? {
+            AND: [
+              filters,
+              {
+                OR: [
+                  { scheduledStartAt: { gt: pivot } },
+                  { scheduledStartAt: pivot, id: { gt: pivotId } },
+                ],
+              },
+            ],
+          }
+        : {
+            AND: [
+              filters,
+              { scheduledStartAt: inclusive ? { gte: pivot } : { gt: pivot } },
+            ],
+          };
+      const rows = await prisma.job.findMany({
+        where,
+        orderBy: [{ scheduledStartAt: 'asc' }, { id: 'asc' }],
+        take: limit + 1,
+        include: jobInclude,
+      });
+      const hasMore = rows.length > limit;
+      const sliced = rows.slice(0, limit);
+      const tail = sliced[sliced.length - 1];
+      const nextCursor = hasMore && tail ? encodeJobsCursor(tail.scheduledStartAt, tail.id) : null;
+      return { rows: sliced, hasMore, nextCursor };
+    };
+
+    const cursor = parseJobsCursor(query.cursor);
+
+    // Paged request: one-directional fetch from a cursor.
+    if (query.direction && cursor) {
+      const limit = query.limit ?? DEFAULT_PAGE;
+      if (query.direction === 'after') {
+        const { rows, hasMore, nextCursor } = await fetchAfter(
+          cursor.startAt,
+          cursor.id,
+          limit,
+          false,
+        );
+        return reply.send({
+          items: rows.map(mapJob),
+          nextCursor: null,
+          nextCursorAfter: nextCursor,
+          hasMoreAfter: hasMore,
+        });
+      }
+      const { rows, hasMore, nextCursor } = await fetchBefore(cursor.startAt, cursor.id, limit);
+      return reply.send({
+        items: rows.reverse().map(mapJob),
+        nextCursor: null,
+        nextCursorBefore: nextCursor,
+        hasMoreBefore: hasMore,
+      });
+    }
+
+    // Initial window around the anchor (default: today).
+    const anchor = query.anchor ? new Date(query.anchor) : new Date();
+
+    const [beforeRes, afterRes] = await Promise.all([
+      fetchBefore(anchor, null, DEFAULT_BEFORE),
+      fetchAfter(anchor, null, DEFAULT_AFTER, true),
+    ]);
+
+    const items = [...beforeRes.rows.slice().reverse(), ...afterRes.rows].map(mapJob);
 
     return reply.send({
       items,
-      nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null,
+      nextCursor: null,
+      nextCursorBefore: beforeRes.nextCursor,
+      hasMoreBefore: beforeRes.hasMore,
+      nextCursorAfter: afterRes.nextCursor,
+      hasMoreAfter: afterRes.hasMore,
     });
   });
 
@@ -308,6 +566,37 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     });
     if (!job) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
     return reply.send({ item: jobDto(job) });
+  });
+
+  // ── Notes for a job ──────────────────────────────────────────────────
+  fastify.get('/api/jobs/:id/notes', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const job = await prisma.job.findFirst({
+      where: { id, organizationId: req.auth.orgId },
+      select: { id: true },
+    });
+    if (!job) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
+
+    const notes = await prisma.customerNote.findMany({
+      where: { jobId: id, organizationId: req.auth.orgId },
+      orderBy: { createdAt: 'asc' },
+      include: { author: { select: { email: true } } },
+    });
+
+    return reply.send({
+      notes: notes.map((n) => ({
+        id: n.id,
+        noteGroupId: n.noteGroupId,
+        jobId: n.jobId,
+        customerId: n.customerId,
+        content: n.content,
+        authorUserId: n.authorUserId,
+        authorEmail: n.author?.email ?? null,
+        createdAt: n.createdAt.toISOString(),
+        updatedAt: n.updatedAt.toISOString(),
+      })),
+    });
   });
 
   // ── Edit (basic fields) ──────────────────────────────────────────────
@@ -327,37 +616,89 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     }
 
     const tags = body.tags ? dedupeTags(body.tags) : undefined;
+    const orgId = req.auth.orgId;
+    const actorUserId = req.auth.sub;
 
-    const updated = await prisma.job.update({
-      where: { id },
-      data: {
-        customerAddressId: body.customerAddressId ?? undefined,
-        serviceId: body.serviceId !== undefined ? body.serviceId : undefined,
-        titleOrSummary: body.titleOrSummary !== undefined ? body.titleOrSummary : undefined,
-        priceCents: body.priceCents ?? undefined,
-        leadSource: body.leadSource !== undefined ? body.leadSource : undefined,
-        privateNotes: body.privateNotes !== undefined ? body.privateNotes : undefined,
-        ...(tags
-          ? {
-              tags: {
-                deleteMany: {},
-                create: tags.map((tag) => ({ tag })),
-              },
-            }
-          : {}),
-      },
-      include: JOB_INCLUDE,
+    let replaceItems: JobServiceItemInput[] | null = null;
+    let totalCentsOverride: number | undefined;
+    let primaryServiceIdOverride: string | null | undefined;
+    if (body.services !== undefined) {
+      replaceItems = normalizeServiceItems({ services: body.services });
+      await validateServiceIds(replaceItems, orgId);
+      const derived = deriveJobTotals(replaceItems);
+      totalCentsOverride = derived.totalCents;
+      primaryServiceIdOverride = derived.primaryServiceId;
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      if (replaceItems) {
+        await tx.jobServiceItem.deleteMany({ where: { jobId: id } });
+      }
+      const updated = await tx.job.update({
+        where: { id },
+        data: {
+          customerAddressId: body.customerAddressId ?? undefined,
+          serviceId:
+            primaryServiceIdOverride !== undefined
+              ? primaryServiceIdOverride
+              : body.serviceId !== undefined
+                ? body.serviceId
+                : undefined,
+          titleOrSummary: body.titleOrSummary !== undefined ? body.titleOrSummary : undefined,
+          priceCents:
+            totalCentsOverride !== undefined ? totalCentsOverride : (body.priceCents ?? undefined),
+          leadSource: body.leadSource !== undefined ? body.leadSource : undefined,
+          privateNotes: body.privateNotes !== undefined ? body.privateNotes : undefined,
+          ...(tags
+            ? {
+                tags: {
+                  deleteMany: {},
+                  create: tags.map((tag) => ({ tag })),
+                },
+              }
+            : {}),
+          ...(replaceItems
+            ? {
+                serviceItems: {
+                  create: replaceItems.map((item, idx) => ({
+                    serviceId: item.serviceId ?? null,
+                    priceCents: item.priceCents,
+                    nameSnapshot: item.nameSnapshot ?? null,
+                    orderIndex: idx,
+                  })),
+                },
+              }
+            : {}),
+        },
+        include: JOB_INCLUDE,
+      });
+
+      const noteMappings = body.noteOps && body.noteOps.length > 0
+        ? await processNoteOps({
+            tx,
+            orgId,
+            jobId: id,
+            customerId: existing.customerId,
+            authorUserId: actorUserId,
+            recurringSeriesId: null,
+            occurrenceIndex: null,
+            scope: 'this',
+            noteOps: body.noteOps,
+          })
+        : [];
+
+      await auditLog(tx, {
+        organizationId: orgId,
+        actorUserId,
+        entityType: 'job',
+        entityId: id,
+        action: 'update',
+      });
+
+      return { updated, noteMappings };
     });
 
-    await auditLog(prisma, {
-      organizationId: req.auth.orgId,
-      actorUserId: req.auth.sub,
-      entityType: 'job',
-      entityId: id,
-      action: 'update',
-    });
-
-    return reply.send({ item: jobDto(updated) });
+    return reply.send({ item: jobDto(result.updated), noteMappings: result.noteMappings });
   });
 
   // ── Schedule ──────────────────────────────────────────────────────────
@@ -489,6 +830,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
 
       const invoiceNumber = await nextInvoiceNumber(orgId, tx);
       const priceCents = job.priceCents;
+      const lines = buildLineItemsFromJob(job);
 
       const invoice = await tx.invoice.create({
         data: {
@@ -504,6 +846,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
           serviceNameSnapshot: job.titleOrSummary,
           servicePriceCentsSnapshot: priceCents,
           dueDate: null,
+          lineItems: { create: lines },
         },
       });
 
@@ -669,6 +1012,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
         let invoice = job.invoice;
         if (!invoice) {
           const invoiceNumber = await nextInvoiceNumber(orgId, tx);
+          const lines = buildLineItemsFromJob(job);
           invoice = await tx.invoice.create({
             data: {
               organizationId: orgId,
@@ -683,6 +1027,7 @@ export async function jobsRoutes(fastify: FastifyInstance) {
               serviceNameSnapshot: job.titleOrSummary,
               servicePriceCentsSnapshot: job.priceCents,
               dueDate: null,
+              lineItems: { create: lines },
             },
           });
         }
@@ -740,11 +1085,24 @@ export async function jobsRoutes(fastify: FastifyInstance) {
 
     const job = await prisma.job.findFirst({
       where: { id, organizationId: orgId },
-      select: { id: true, recurringSeriesId: true, invoice: { select: { status: true } } },
+      select: {
+        id: true,
+        jobNumber: true,
+        jobStage: true,
+        recurringSeriesId: true,
+        invoice: { select: { status: true } },
+      },
     });
     if (!job) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
     if (job.recurringSeriesId) {
       throw new ApiError(ERROR_CODES.NOT_RECURRING, 400, 'Use occurrence-delete for recurring jobs');
+    }
+    if (job.jobStage === 'job_done' && job.invoice) {
+      throw new ApiError(
+        ERROR_CODES.VALIDATION_FAILED,
+        400,
+        `Job #${job.jobNumber} cannot be deleted because it is marked as done`,
+      );
     }
     if (job.invoice?.status === 'paid') {
       throw new ApiError(ERROR_CODES.VALIDATION_FAILED, 400, 'Cannot delete a job with a paid invoice');
@@ -754,47 +1112,149 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     return reply.status(204).send();
   });
 
-  // ── Customer jobs list (replaces the Phase 4 stub) ────────────────────
+  // ── Customer jobs list (bidirectional pagination around an anchor) ────
   fastify.get('/api/customers/:customerId/jobs', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
     const { customerId } = customerIdParam.parse(req.params);
+    const q = customerJobsQuerySchema.parse(req.query);
+    const orgId = req.auth.orgId;
 
     const customer = await prisma.customer.findFirst({
-      where: { id: customerId, organizationId: req.auth.orgId },
+      where: { id: customerId, organizationId: orgId },
       select: { id: true },
     });
     if (!customer) throw new ApiError(ERROR_CODES.CUSTOMER_NOT_FOUND, 404, 'Customer not found');
 
-    const jobs = await prisma.job.findMany({
-      where: {
-        customerId,
-        organizationId: req.auth.orgId,
-        deletedFromSeriesAt: null,
-      },
-      orderBy: [{ scheduledStartAt: 'asc' }, { id: 'asc' }],
-      take: 2000,
-      include: {
-        customer: { select: { displayName: true } },
-        assignee: { select: { displayName: true } },
-      },
+    const DEFAULT_BEFORE = 15;
+    const DEFAULT_AFTER = 25;
+    const DEFAULT_PAGE = 15;
+
+    const anchor = q.anchor ? new Date(q.anchor) : new Date();
+    const cursor = parseJobsCursor(q.cursor);
+
+    const jobInclude = {
+      customer: { select: { displayName: true } },
+      assignee: { select: { displayName: true } },
+    } as const;
+    type JobWithRel = Prisma.JobGetPayload<{ include: typeof jobInclude }>;
+
+    const mapJob = (j: JobWithRel) => ({
+      id: j.id,
+      jobNumber: j.jobNumber,
+      customerId: j.customerId,
+      customerDisplayName: j.customer.displayName,
+      titleOrSummary: j.titleOrSummary,
+      priceCents: j.priceCents,
+      scheduledStartAt: j.scheduledStartAt.toISOString(),
+      scheduledEndAt: j.scheduledEndAt.toISOString(),
+      assigneeTeamMemberId: j.assigneeTeamMemberId,
+      assigneeDisplayName: j.assignee?.displayName ?? null,
+      jobStage: j.jobStage,
+      finishedAt: j.finishedAt?.toISOString() ?? null,
     });
 
+    const baseWhere = {
+      customerId,
+      organizationId: orgId,
+      deletedFromSeriesAt: null,
+    } as const;
+
+    const fetchBefore = async (pivot: Date, pivotId: string | null, limit: number) => {
+      const where: Prisma.JobWhereInput = pivotId
+        ? {
+            ...baseWhere,
+            OR: [
+              { scheduledStartAt: { lt: pivot } },
+              { scheduledStartAt: pivot, id: { lt: pivotId } },
+            ],
+          }
+        : { ...baseWhere, scheduledStartAt: { lt: pivot } };
+      const rows = await prisma.job.findMany({
+        where,
+        orderBy: [{ scheduledStartAt: 'desc' }, { id: 'desc' }],
+        take: limit + 1,
+        include: jobInclude,
+      });
+      const hasMore = rows.length > limit;
+      const sliced = rows.slice(0, limit);
+      const tail = sliced[sliced.length - 1];
+      const nextCursor = hasMore && tail ? encodeJobsCursor(tail.scheduledStartAt, tail.id) : null;
+      return { rows: sliced, hasMore, nextCursor };
+    };
+
+    const fetchAfter = async (
+      pivot: Date,
+      pivotId: string | null,
+      limit: number,
+      inclusive: boolean,
+    ) => {
+      const where: Prisma.JobWhereInput = pivotId
+        ? {
+            ...baseWhere,
+            OR: [
+              { scheduledStartAt: { gt: pivot } },
+              { scheduledStartAt: pivot, id: { gt: pivotId } },
+            ],
+          }
+        : {
+            ...baseWhere,
+            scheduledStartAt: inclusive ? { gte: pivot } : { gt: pivot },
+          };
+      const rows = await prisma.job.findMany({
+        where,
+        orderBy: [{ scheduledStartAt: 'asc' }, { id: 'asc' }],
+        take: limit + 1,
+        include: jobInclude,
+      });
+      const hasMore = rows.length > limit;
+      const sliced = rows.slice(0, limit);
+      const tail = sliced[sliced.length - 1];
+      const nextCursor = hasMore && tail ? encodeJobsCursor(tail.scheduledStartAt, tail.id) : null;
+      return { rows: sliced, hasMore, nextCursor };
+    };
+
+    // Paged request: one-directional fetch from a cursor.
+    if (q.direction && cursor) {
+      const limit = q.limit ?? DEFAULT_PAGE;
+      if (q.direction === 'after') {
+        const target = new Date(cursor.startAt.getTime() + 365 * 24 * 60 * 60 * 1000);
+        await ensureMaterializedUntil(orgId, target, { customerId });
+        const { rows, hasMore, nextCursor } = await fetchAfter(cursor.startAt, cursor.id, limit, false);
+        return reply.send({
+          items: rows.map(mapJob),
+          nextCursor: null,
+          nextCursorAfter: nextCursor,
+          hasMoreAfter: hasMore,
+        });
+      }
+      const { rows, hasMore, nextCursor } = await fetchBefore(cursor.startAt, cursor.id, limit);
+      return reply.send({
+        items: rows.reverse().map(mapJob),
+        nextCursor: null,
+        nextCursorBefore: nextCursor,
+        hasMoreBefore: hasMore,
+      });
+    }
+
+    // Initial window around the anchor.
+    const defaultHorizon = new Date();
+    defaultHorizon.setFullYear(defaultHorizon.getFullYear() + 2);
+    await ensureMaterializedUntil(orgId, defaultHorizon, { customerId });
+
+    const [beforeRes, afterRes] = await Promise.all([
+      fetchBefore(anchor, null, DEFAULT_BEFORE),
+      fetchAfter(anchor, null, DEFAULT_AFTER, true),
+    ]);
+
+    const items = [...beforeRes.rows.slice().reverse(), ...afterRes.rows].map(mapJob);
+
     return reply.send({
-      items: jobs.map((j) => ({
-        id: j.id,
-        jobNumber: j.jobNumber,
-        customerId: j.customerId,
-        customerDisplayName: j.customer.displayName,
-        titleOrSummary: j.titleOrSummary,
-        priceCents: j.priceCents,
-        scheduledStartAt: j.scheduledStartAt.toISOString(),
-        scheduledEndAt: j.scheduledEndAt.toISOString(),
-        assigneeTeamMemberId: j.assigneeTeamMemberId,
-        assigneeDisplayName: j.assignee?.displayName ?? null,
-        jobStage: j.jobStage,
-        finishedAt: j.finishedAt?.toISOString() ?? null,
-      })),
+      items,
       nextCursor: null,
+      nextCursorBefore: beforeRes.nextCursor,
+      hasMoreBefore: beforeRes.hasMore,
+      nextCursorAfter: afterRes.nextCursor,
+      hasMoreAfter: afterRes.hasMore,
     });
   });
 }

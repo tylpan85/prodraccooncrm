@@ -17,6 +17,21 @@ type Tx = Omit<
 
 const idParam = z.object({ id: z.string().uuid() });
 
+function encodeInvoicesCursor(createdAt: Date, id: string): string {
+  return `${createdAt.getTime()}:${id}`;
+}
+
+function parseInvoicesCursor(raw?: string): { createdAt: Date; id: string } | null {
+  if (!raw) return null;
+  const idx = raw.indexOf(':');
+  if (idx <= 0) return null;
+  const tsStr = raw.slice(0, idx);
+  const id = raw.slice(idx + 1);
+  const ts = Number.parseInt(tsStr, 10);
+  if (!id || Number.isNaN(ts)) return null;
+  return { createdAt: new Date(ts), id };
+}
+
 async function nextInvoiceNumber(orgId: string, tx: Tx): Promise<string> {
   const counter = await tx.organizationCounter.upsert({
     where: { organizationId_name: { organizationId: orgId, name: 'invoice_number' } },
@@ -29,7 +44,8 @@ async function nextInvoiceNumber(orgId: string, tx: Tx): Promise<string> {
 const INVOICE_INCLUDE = {
   job: { select: { jobNumber: true } },
   customer: { select: { displayName: true } },
-} as const;
+  lineItems: { orderBy: { orderIndex: 'asc' } },
+} as const satisfies Prisma.InvoiceInclude;
 
 type InvoiceRecord = Prisma.InvoiceGetPayload<{ include: typeof INVOICE_INCLUDE }>;
 
@@ -64,6 +80,12 @@ function invoiceDto(inv: InvoiceRecord) {
     paidCents: inv.paidCents,
     serviceNameSnapshot: inv.serviceNameSnapshot,
     servicePriceCentsSnapshot: inv.servicePriceCentsSnapshot,
+    lineItems: inv.lineItems.map((li) => ({
+      id: li.id,
+      description: li.description,
+      priceCents: li.priceCents,
+      orderIndex: li.orderIndex,
+    })),
     dueDate: inv.dueDate?.toISOString().slice(0, 10) ?? null,
     createdAt: inv.createdAt.toISOString(),
     sentAt: inv.sentAt?.toISOString() ?? null,
@@ -80,67 +102,80 @@ function invoiceDto(inv: InvoiceRecord) {
 export async function invoicesRoutes(fastify: FastifyInstance) {
   fastify.addHook('preHandler', requireAuth);
 
-  // ── List invoices ────────────────────────────────────────────────────
+  // ── List invoices (bidirectional pagination + filters) ───────────────
   fastify.get('/api/invoices', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
     const orgId = req.auth.orgId;
     const query = invoiceListQuerySchema.parse(req.query);
 
-    const where: Prisma.InvoiceWhereInput = { organizationId: orgId };
+    const DEFAULT_BEFORE = 15;
+    const DEFAULT_AFTER = 25;
+    const DEFAULT_PAGE = 15;
 
-    // Tab filtering
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    const filters: Prisma.InvoiceWhereInput = { organizationId: orgId };
+    const andClauses: Prisma.InvoiceWhereInput[] = [];
+
     switch (query.status) {
       case 'unsent':
-        where.status = 'draft';
+        filters.status = 'draft';
         break;
       case 'open':
-        where.status = 'sent';
-        where.amountDueCents = { gt: 0 };
-        where.OR = [{ dueDate: null }, { dueDate: { gte: today } }];
+        filters.status = 'sent';
+        filters.amountDueCents = { gt: 0 };
+        andClauses.push({ OR: [{ dueDate: null }, { dueDate: { gte: today } }] });
         break;
       case 'past_due':
-        where.status = 'sent';
-        where.dueDate = { lt: today, not: null };
-        where.amountDueCents = { gt: 0 };
+        filters.status = 'sent';
+        filters.dueDate = { lt: today, not: null };
+        filters.amountDueCents = { gt: 0 };
         break;
       case 'paid':
-        where.status = 'paid';
+        filters.status = 'paid';
         break;
       case 'void':
-        where.status = 'void';
+        filters.status = 'void';
         break;
     }
 
-    if (query.customerId) where.customerId = query.customerId;
-    if (query.q && query.q.trim().length > 0) {
-      const q = query.q.trim();
-      where.AND = [
-        (where.AND as Prisma.InvoiceWhereInput) ?? {},
-        {
-          OR: [
-            { invoiceNumber: { contains: q, mode: 'insensitive' } },
-            { customer: { displayName: { contains: q, mode: 'insensitive' } } },
-          ],
-        },
-      ];
+    if (query.customerId) filters.customerId = query.customerId;
+
+    if (query.dateFrom || query.dateTo) {
+      const range: Prisma.DateTimeFilter = {};
+      if (query.dateFrom) range.gte = new Date(query.dateFrom);
+      if (query.dateTo) range.lte = new Date(query.dateTo);
+      filters.createdAt = range;
     }
 
-    const limit = query.limit;
-    const rows = await prisma.invoice.findMany({
-      where,
-      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
-      take: limit + 1,
-      ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
-      include: {
-        customer: { select: { displayName: true } },
-      },
-    });
+    if (query.amountMinCents !== undefined || query.amountMaxCents !== undefined) {
+      const range: Prisma.IntFilter = {};
+      if (query.amountMinCents !== undefined) range.gte = query.amountMinCents;
+      if (query.amountMaxCents !== undefined) range.lte = query.amountMaxCents;
+      filters.totalCents = range;
+    }
 
-    const hasMore = rows.length > limit;
-    const items = (hasMore ? rows.slice(0, limit) : rows).map((inv) => ({
+    if (query.q && query.q.trim().length > 0) {
+      const q = query.q.trim();
+      andClauses.push({
+        OR: [
+          { invoiceNumber: { contains: q, mode: 'insensitive' } },
+          { customer: { displayName: { contains: q, mode: 'insensitive' } } },
+          { serviceNameSnapshot: { contains: q, mode: 'insensitive' } },
+        ],
+      });
+    }
+
+    const baseWhere: Prisma.InvoiceWhereInput =
+      andClauses.length > 0 ? { AND: [filters, ...andClauses] } : filters;
+
+    const invoiceInclude = {
+      customer: { select: { displayName: true } },
+    } as const;
+    type InvWithRel = Prisma.InvoiceGetPayload<{ include: typeof invoiceInclude }>;
+
+    const mapInvoice = (inv: InvWithRel) => ({
       id: inv.id,
       invoiceNumber: inv.invoiceNumber,
       customerId: inv.customerId,
@@ -150,11 +185,123 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
       amountDueCents: inv.amountDueCents,
       dueDate: inv.dueDate?.toISOString().slice(0, 10) ?? null,
       status: deriveStatus(inv),
-    }));
+      createdAt: inv.createdAt.toISOString(),
+    });
+
+    const fetchBefore = async (pivot: Date, pivotId: string | null, limit: number) => {
+      const where: Prisma.InvoiceWhereInput = pivotId
+        ? {
+            AND: [
+              baseWhere,
+              {
+                OR: [
+                  { createdAt: { lt: pivot } },
+                  { createdAt: pivot, id: { lt: pivotId } },
+                ],
+              },
+            ],
+          }
+        : { AND: [baseWhere, { createdAt: { lt: pivot } }] };
+      const rows = await prisma.invoice.findMany({
+        where,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: limit + 1,
+        include: invoiceInclude,
+      });
+      const hasMore = rows.length > limit;
+      const sliced = rows.slice(0, limit);
+      const tail = sliced[sliced.length - 1];
+      const nextCursor = hasMore && tail ? encodeInvoicesCursor(tail.createdAt, tail.id) : null;
+      return { rows: sliced, hasMore, nextCursor };
+    };
+
+    const fetchAfter = async (
+      pivot: Date,
+      pivotId: string | null,
+      limit: number,
+      inclusive: boolean,
+    ) => {
+      const where: Prisma.InvoiceWhereInput = pivotId
+        ? {
+            AND: [
+              baseWhere,
+              {
+                OR: [
+                  { createdAt: { gt: pivot } },
+                  { createdAt: pivot, id: { gt: pivotId } },
+                ],
+              },
+            ],
+          }
+        : {
+            AND: [baseWhere, { createdAt: inclusive ? { gte: pivot } : { gt: pivot } }],
+          };
+      const rows = await prisma.invoice.findMany({
+        where,
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        take: limit + 1,
+        include: invoiceInclude,
+      });
+      const hasMore = rows.length > limit;
+      const sliced = rows.slice(0, limit);
+      const tail = sliced[sliced.length - 1];
+      const nextCursor = hasMore && tail ? encodeInvoicesCursor(tail.createdAt, tail.id) : null;
+      return { rows: sliced, hasMore, nextCursor };
+    };
+
+    const cursor = parseInvoicesCursor(query.cursor);
+
+    // Paged request: one-directional fetch from a cursor.
+    if (query.direction && cursor) {
+      const limit = query.limit ?? DEFAULT_PAGE;
+      if (query.direction === 'after') {
+        const { rows, hasMore, nextCursor } = await fetchAfter(
+          cursor.createdAt,
+          cursor.id,
+          limit,
+          false,
+        );
+        return reply.send({
+          items: rows.map(mapInvoice),
+          nextCursor: null,
+          nextCursorAfter: nextCursor,
+          hasMoreAfter: hasMore,
+        });
+      }
+      const { rows, hasMore, nextCursor } = await fetchBefore(
+        cursor.createdAt,
+        cursor.id,
+        limit,
+      );
+      return reply.send({
+        items: rows.reverse().map(mapInvoice),
+        nextCursor: null,
+        nextCursorBefore: nextCursor,
+        hasMoreBefore: hasMore,
+      });
+    }
+
+    // Initial window around the anchor (default: today).
+    const anchor = query.anchor
+      ? new Date(query.anchor)
+      : query.dateFrom
+        ? new Date(query.dateFrom)
+        : new Date();
+
+    const [beforeRes, afterRes] = await Promise.all([
+      fetchBefore(anchor, null, DEFAULT_BEFORE),
+      fetchAfter(anchor, null, DEFAULT_AFTER, true),
+    ]);
+
+    const items = [...beforeRes.rows.slice().reverse(), ...afterRes.rows].map(mapInvoice);
 
     return reply.send({
       items,
-      nextCursor: hasMore ? (items[items.length - 1]?.id ?? null) : null,
+      nextCursor: null,
+      nextCursorBefore: beforeRes.nextCursor,
+      hasMoreBefore: beforeRes.hasMore,
+      nextCursorAfter: afterRes.nextCursor,
+      hasMoreAfter: afterRes.hasMore,
     });
   });
 
@@ -185,6 +332,15 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
         titleOrSummary: true,
         priceCents: true,
         invoice: { select: { id: true } },
+        serviceItems: {
+          select: {
+            priceCents: true,
+            orderIndex: true,
+            nameSnapshot: true,
+            service: { select: { name: true } },
+          },
+          orderBy: { orderIndex: 'asc' },
+        },
       },
     });
     if (!job) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
@@ -195,6 +351,21 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
         'Invoice already exists for this job',
       );
     }
+
+    const lines =
+      job.serviceItems.length > 0
+        ? job.serviceItems.map((item) => ({
+            description: item.service?.name ?? item.nameSnapshot ?? 'Service',
+            priceCents: item.priceCents,
+            orderIndex: item.orderIndex,
+          }))
+        : [
+            {
+              description: job.titleOrSummary ?? 'Service',
+              priceCents: job.priceCents,
+              orderIndex: 0,
+            },
+          ];
 
     const inv = await prisma.$transaction(async (tx) => {
       const invoiceNumber = await nextInvoiceNumber(orgId, tx);
@@ -212,6 +383,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           serviceNameSnapshot: job.titleOrSummary,
           servicePriceCentsSnapshot: job.priceCents,
           dueDate: null,
+          lineItems: { create: lines },
         },
         include: INVOICE_INCLUDE,
       });
@@ -238,7 +410,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
 
     const existing = await prisma.invoice.findFirst({
       where: { id, organizationId: orgId },
-      select: { id: true, status: true },
+      select: { id: true, status: true, paidCents: true },
     });
     if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Invoice not found');
     if (existing.status !== 'draft') {
@@ -249,18 +421,41 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
     if (body.serviceNameSnapshot !== undefined) data.serviceNameSnapshot = body.serviceNameSnapshot;
     if (body.servicePriceCentsSnapshot !== undefined) {
       data.servicePriceCentsSnapshot = body.servicePriceCentsSnapshot;
-      data.subtotalCents = body.servicePriceCentsSnapshot;
-      data.totalCents = body.servicePriceCentsSnapshot;
-      data.amountDueCents = body.servicePriceCentsSnapshot;
     }
     if (body.dueDate !== undefined) {
       data.dueDate = body.dueDate ? new Date(body.dueDate) : null;
     }
 
-    const updated = await prisma.invoice.update({
-      where: { id },
-      data,
-      include: INVOICE_INCLUDE,
+    if (body.lineItems !== undefined) {
+      const total = body.lineItems.reduce((sum, li) => sum + li.priceCents, 0);
+      data.subtotalCents = total;
+      data.totalCents = total;
+      data.amountDueCents = Math.max(0, total - existing.paidCents);
+    } else if (body.servicePriceCentsSnapshot !== undefined) {
+      data.subtotalCents = body.servicePriceCentsSnapshot;
+      data.totalCents = body.servicePriceCentsSnapshot;
+      data.amountDueCents = Math.max(0, body.servicePriceCentsSnapshot - existing.paidCents);
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      if (body.lineItems !== undefined) {
+        await tx.invoiceLineItem.deleteMany({ where: { invoiceId: id } });
+        if (body.lineItems.length > 0) {
+          await tx.invoiceLineItem.createMany({
+            data: body.lineItems.map((li, idx) => ({
+              invoiceId: id,
+              description: li.description,
+              priceCents: li.priceCents,
+              orderIndex: idx,
+            })),
+          });
+        }
+      }
+      return tx.invoice.update({
+        where: { id },
+        data,
+        include: INVOICE_INCLUDE,
+      });
     });
 
     await auditLog(prisma, {

@@ -115,6 +115,7 @@ model Organization {
   invoices        Invoice[]
   auditLogs       AuditLog[]
   counters        OrganizationCounter[]
+  customerNotes   CustomerNote[]
 
   @@map("organizations")
 }
@@ -133,6 +134,7 @@ model User {
   organization  Organization   @relation(fields: [organizationId], references: [id])
   refreshTokens RefreshToken[]
   auditLogs     AuditLog[]
+  customerNotes CustomerNote[]
 
   @@index([organizationId])
   @@map("users")
@@ -204,6 +206,7 @@ model Customer {
   tags         CustomerTag[]
   jobs         Job[]
   invoices     Invoice[]
+  notes        CustomerNote[]
 
   @@index([organizationId, displayName])
   @@index([organizationId, doNotService])
@@ -231,13 +234,13 @@ model CustomerAddress {
 }
 
 model CustomerPhone {
-  id          String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  customerId  String     @map("customer_id") @db.Uuid
-  value       String
-  digitsOnly  String     @map("digits_only")
-  type        PhoneType?
-  note        String?
-  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customerId String     @map("customer_id") @db.Uuid
+  value      String
+  digitsOnly String     @map("digits_only")
+  type       PhoneType?
+  note       String?
+  createdAt  DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
@@ -280,8 +283,9 @@ model Service {
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id])
+  organization Organization      @relation(fields: [organizationId], references: [id])
   jobs         Job[]
+  jobItems     JobServiceItem[]
 
   @@index([organizationId, active])
   @@map("services")
@@ -307,28 +311,28 @@ model LeadSource {
 // =========================================================================
 
 model Job {
-  id                       String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  organizationId           String        @map("organization_id") @db.Uuid
-  jobNumber                String        @map("job_number")
-  customerId               String        @map("customer_id") @db.Uuid
-  customerAddressId        String        @map("customer_address_id") @db.Uuid
-  serviceId                String?       @map("service_id") @db.Uuid
-  titleOrSummary           String?       @map("title_or_summary")
-  priceCents               Int           @default(0) @map("price_cents")
-  leadSource               String?       @map("lead_source")
-  privateNotes             String?       @map("private_notes")
-  scheduledStartAt         DateTime      @map("scheduled_start_at") @db.Timestamptz(6)
-  scheduledEndAt           DateTime      @map("scheduled_end_at") @db.Timestamptz(6)
-  assigneeTeamMemberId     String?       @map("assignee_team_member_id") @db.Uuid
-  jobStage                 JobStage      @default(scheduled) @map("job_stage")
-  finishedAt               DateTime?     @map("finished_at") @db.Timestamptz(6)
-  recurringSeriesId        String?       @map("recurring_series_id") @db.Uuid
-  occurrenceIndex          Int?          @map("occurrence_index")
-  isExceptionInstance      Boolean       @default(false) @map("is_exception_instance")
-  deletedFromSeriesAt      DateTime?     @map("deleted_from_series_at") @db.Timestamptz(6)
-  generatedFromRuleVersion Int?          @map("generated_from_rule_version")
-  createdAt                DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt                DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  id                       String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId           String    @map("organization_id") @db.Uuid
+  jobNumber                String    @map("job_number")
+  customerId               String    @map("customer_id") @db.Uuid
+  customerAddressId        String    @map("customer_address_id") @db.Uuid
+  serviceId                String?   @map("service_id") @db.Uuid
+  titleOrSummary           String?   @map("title_or_summary")
+  priceCents               Int       @default(0) @map("price_cents")
+  leadSource               String?   @map("lead_source")
+  privateNotes             String?   @map("private_notes")
+  scheduledStartAt         DateTime  @map("scheduled_start_at") @db.Timestamptz(6)
+  scheduledEndAt           DateTime  @map("scheduled_end_at") @db.Timestamptz(6)
+  assigneeTeamMemberId     String?   @map("assignee_team_member_id") @db.Uuid
+  jobStage                 JobStage  @default(scheduled) @map("job_stage")
+  finishedAt               DateTime? @map("finished_at") @db.Timestamptz(6)
+  recurringSeriesId        String?   @map("recurring_series_id") @db.Uuid
+  occurrenceIndex          Int?      @map("occurrence_index")
+  isExceptionInstance      Boolean   @default(false) @map("is_exception_instance")
+  deletedFromSeriesAt      DateTime? @map("deleted_from_series_at") @db.Timestamptz(6)
+  generatedFromRuleVersion Int?      @map("generated_from_rule_version")
+  createdAt                DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt                DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   organization    Organization     @relation(fields: [organizationId], references: [id])
   customer        Customer         @relation(fields: [customerId], references: [id])
@@ -338,7 +342,9 @@ model Job {
   recurringSeries RecurringSeries? @relation("SeriesJobs", fields: [recurringSeriesId], references: [id])
   sourceOfSeries  RecurringSeries? @relation("SourceJob")
   tags            JobTag[]
+  serviceItems    JobServiceItem[]
   invoice         Invoice?
+  customerNotes   CustomerNote[]
 
   @@unique([organizationId, jobNumber])
   @@index([organizationId, scheduledStartAt])
@@ -402,6 +408,7 @@ model RecurringSeries {
   jobs         Job[]        @relation("SeriesJobs")
 
   @@index([organizationId])
+  @@index([organizationId, recurrenceEnabled, recurrenceEndMode, materializationHorizonUntil])
   @@map("recurring_series")
 }
 
@@ -429,14 +436,46 @@ model Invoice {
   voidedAt                  DateTime?     @map("voided_at") @db.Timestamptz(6)
   updatedAt                 DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  organization Organization @relation(fields: [organizationId], references: [id])
-  job          Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  customer     Customer     @relation(fields: [customerId], references: [id])
+  organization Organization      @relation(fields: [organizationId], references: [id])
+  job          Job               @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  customer     Customer          @relation(fields: [customerId], references: [id])
+  lineItems    InvoiceLineItem[]
 
   @@unique([organizationId, invoiceNumber])
   @@index([organizationId, status, dueDate])
   @@index([organizationId, customerId])
   @@map("invoices")
+}
+
+model JobServiceItem {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  jobId        String   @map("job_id") @db.Uuid
+  serviceId    String?  @map("service_id") @db.Uuid
+  orderIndex   Int      @map("order_index")
+  priceCents   Int      @map("price_cents")
+  nameSnapshot String?  @map("name_snapshot")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  job     Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  service Service? @relation(fields: [serviceId], references: [id])
+
+  @@index([jobId, orderIndex])
+  @@map("job_service_items")
+}
+
+model InvoiceLineItem {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  invoiceId   String   @map("invoice_id") @db.Uuid
+  description String
+  priceCents  Int      @map("price_cents")
+  orderIndex  Int      @map("order_index")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId, orderIndex])
+  @@map("invoice_line_items")
 }
 
 // =========================================================================
@@ -474,4 +513,30 @@ model AuditLog {
 
   @@index([organizationId, entityType, entityId, createdAt])
   @@map("audit_log")
+}
+
+// =========================================================================
+// Customer notes (per-visit, linkable across a recurring series via group id)
+// =========================================================================
+
+model CustomerNote {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @map("organization_id") @db.Uuid
+  customerId     String   @map("customer_id") @db.Uuid
+  jobId          String   @map("job_id") @db.Uuid
+  noteGroupId    String   @map("note_group_id") @db.Uuid
+  content        String
+  authorUserId   String?  @map("author_user_id") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  organization Organization @relation(fields: [organizationId], references: [id])
+  customer     Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  job          Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  author       User?        @relation(fields: [authorUserId], references: [id])
+
+  @@index([jobId, createdAt])
+  @@index([customerId])
+  @@index([noteGroupId])
+  @@map("customer_notes")
 }

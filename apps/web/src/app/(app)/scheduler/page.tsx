@@ -359,6 +359,13 @@ export default function SchedulerPage() {
     { type: 'job'; id: string } | { type: 'event'; id: string } | null
   >(null);
 
+  // Empty-slot picker state (lets user choose New job vs New event)
+  const [slotPicker, setSlotPicker] = useState<{
+    startAt: string;
+    endAt: string;
+    assigneeTeamMemberId: string | null;
+  } | null>(null);
+
   // Calendar display prefs (persisted to localStorage)
   const [calendarPrefs, setCalendarPrefs] = useState<CalendarPrefs>(() => {
     if (typeof window === 'undefined') return DEFAULT_PREFS;
@@ -476,11 +483,11 @@ export default function SchedulerPage() {
               onJobClick={(id) => setSlideOver({ type: 'job', id })}
               onEventClick={(id) => setSlideOver({ type: 'event', id })}
               onEmptySlotClick={(d, startHour, assigneeTeamMemberId) => {
-                const sp = new URLSearchParams();
-                sp.set('scheduledStartAt', hourToDatetimeLocal(d, startHour));
-                sp.set('scheduledEndAt', hourToDatetimeLocal(d, startHour + 1));
-                if (assigneeTeamMemberId) sp.set('assigneeTeamMemberId', assigneeTeamMemberId);
-                router.push(`/jobs/new?${sp.toString()}` as import('next').Route);
+                setSlotPicker({
+                  startAt: hourToDatetimeLocal(d, startHour),
+                  endAt: hourToDatetimeLocal(d, startHour + 1),
+                  assigneeTeamMemberId: assigneeTeamMemberId ?? null,
+                });
               }}
             />
           ) : (
@@ -506,6 +513,58 @@ export default function SchedulerPage() {
         </SlideOver>
       )}
 
+      {/* ── Empty-slot picker ─────────────────────────────────────── */}
+      {slotPicker && (
+        <SlotPickerDialog
+          slot={slotPicker}
+          onClose={() => setSlotPicker(null)}
+          onPick={(kind) => {
+            const sp = new URLSearchParams();
+            sp.set('scheduledStartAt', slotPicker.startAt);
+            sp.set('scheduledEndAt', slotPicker.endAt);
+            if (slotPicker.assigneeTeamMemberId) {
+              sp.set('assigneeTeamMemberId', slotPicker.assigneeTeamMemberId);
+            }
+            const path = kind === 'job' ? '/jobs/new' : '/events/new';
+            router.push(`${path}?${sp.toString()}` as import('next').Route);
+            setSlotPicker(null);
+          }}
+        />
+      )}
+
+    </div>
+  );
+}
+
+function SlotPickerDialog({
+  onClose,
+  onPick,
+}: {
+  slot: { startAt: string; endAt: string; assigneeTeamMemberId: string | null };
+  onClose: () => void;
+  onPick: (kind: 'job' | 'event') => void;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-sm rounded-lg bg-white p-6 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-base font-semibold text-slate-900">Create new</h2>
+        <p className="mt-1 text-sm text-slate-500">What would you like to schedule?</p>
+        <div className="mt-5 flex flex-col gap-2">
+          <Button onClick={() => onPick('job')}>New job</Button>
+          <Button variant="secondary" onClick={() => onPick('event')}>
+            New event
+          </Button>
+          <Button variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -852,13 +911,22 @@ function MiniCalendar({
 // Day view
 // ---------------------------------------------------------------------------
 
-interface DragPayload {
-  jobId: string;
-  recurringSeriesId: string | null;
-  originalStartIso: string;
-  originalEndIso: string;
-  originalAssigneeId: string | null;
-}
+type DragPayload =
+  | {
+      kind: 'job';
+      jobId: string;
+      recurringSeriesId: string | null;
+      originalStartIso: string;
+      originalEndIso: string;
+      originalAssigneeId: string | null;
+    }
+  | {
+      kind: 'event';
+      eventId: string;
+      originalStartIso: string;
+      originalEndIso: string;
+      originalAssigneeId: string | null;
+    };
 
 interface PendingDrop {
   jobId: string;
@@ -895,10 +963,13 @@ function DayView({
 
   // Drag-and-drop state
   const [draggingJobId, setDraggingJobId] = useState<string | null>(null);
+  const [draggingEventId, setDraggingEventId] = useState<string | null>(null);
   const [hoverLaneKey, setHoverLaneKey] = useState<string | null>(null);
   const [pendingDrop, setPendingDrop] = useState<PendingDrop | null>(null);
   const [showScopeDialog, setShowScopeDialog] = useState(false);
   const [dragPreview, setDragPreview] = useState<{ snappedHour: number; displayName: string; x: number; y: number } | null>(null);
+
+  const isDraggingSomething = draggingJobId !== null || draggingEventId !== null;
 
   const dropMutation = useMutation({
     mutationFn: async (vars: PendingDrop & { scope?: 'this' | 'this_and_future' }) => {
@@ -924,10 +995,24 @@ function DayView({
     },
   });
 
+  const eventDropMutation = useMutation({
+    mutationFn: (vars: { eventId: string; newStart: string; newEnd: string; newAssigneeId: string | null }) =>
+      eventsApi.update(vars.eventId, {
+        scheduledStartAt: vars.newStart,
+        scheduledEndAt: vars.newEnd,
+        assigneeTeamMemberId: vars.newAssigneeId,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['schedule', 'day', date] });
+      queryClient.invalidateQueries({ queryKey: ['schedule'] });
+    },
+  });
+
   function handleDrop(e: React.DragEvent<HTMLDivElement>, laneTeamMemberId: string | null) {
     e.preventDefault();
     setHoverLaneKey(null);
     setDraggingJobId(null);
+    setDraggingEventId(null);
 
     const raw = e.dataTransfer.getData('application/json');
     if (!raw) return;
@@ -968,6 +1053,16 @@ function DayView({
       payload.originalEndIso === newEndIso &&
       payload.originalAssigneeId === laneTeamMemberId
     ) {
+      return;
+    }
+
+    if (payload.kind === 'event') {
+      eventDropMutation.mutate({
+        eventId: payload.eventId,
+        newStart: newStartIso,
+        newEnd: newEndIso,
+        newAssigneeId: laneTeamMemberId,
+      });
       return;
     }
 
@@ -1136,7 +1231,7 @@ function DayView({
               )}
               style={{ height: totalHours * HOUR_HEIGHT }}
               onDragOver={(e) => {
-                if (!draggingJobId) return;
+                if (!isDraggingSomething) return;
                 e.preventDefault();
                 e.dataTransfer.dropEffect = 'move';
                 if (hoverLaneKey !== laneKey) setHoverLaneKey(laneKey);
@@ -1203,6 +1298,7 @@ function DayView({
                     draggable
                     onDragStart={(e) => {
                       const payload: DragPayload = {
+                        kind: 'job',
                         jobId: job.id,
                         recurringSeriesId: job.recurringSeriesId,
                         originalStartIso: job.scheduledStartAt,
@@ -1220,9 +1316,6 @@ function DayView({
                     }}
                     className={cn(
                       'absolute cursor-grab overflow-hidden rounded px-2 py-1 text-left text-xs shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing border',
-                      job.jobStage === 'job_done'
-                        ? 'bg-slate-100 text-slate-600 border-slate-200'
-                        : '',
                       isDragging && 'opacity-50',
                     )}
                     style={{
@@ -1231,11 +1324,10 @@ function DayView({
                       left: `calc(${leftPct}% + 2px)`,
                       width: `calc(${colWidthPct}% - 4px)`,
                       zIndex: 5,
-                      ...(job.jobStage !== 'job_done' && {
-                        backgroundColor: lane.color + '22',
-                        borderColor: lane.color + '88',
-                        color: lane.color,
-                      }),
+                      backgroundColor:
+                        job.jobStage === 'job_done' ? '#f1f5f9' : lane.color + '22',
+                      borderColor: lane.color + '88',
+                      color: lane.color,
                     }}
                     onClick={() => onJobClick(job.id)}
                   >
@@ -1297,12 +1389,34 @@ function DayView({
                 const duration = Math.max(end - start, MIN_BLOCK_DURATION);
                 const top = (start - MIN_HOUR) * HOUR_HEIGHT;
                 const height = duration * HOUR_HEIGHT;
+                const isDraggingEvt = draggingEventId === evt.id;
 
                 return (
                   <button
                     key={evt.id}
                     type="button"
-                    className="absolute left-1 right-1 overflow-hidden rounded border border-violet-200 bg-violet-50 px-2 py-1 text-left text-xs text-violet-900 shadow-sm transition-shadow hover:shadow-md"
+                    draggable
+                    onDragStart={(e) => {
+                      const payload: DragPayload = {
+                        kind: 'event',
+                        eventId: evt.id,
+                        originalStartIso: evt.scheduledStartAt,
+                        originalEndIso: evt.scheduledEndAt,
+                        originalAssigneeId: lane.teamMemberId,
+                      };
+                      e.dataTransfer.setData('application/json', JSON.stringify(payload));
+                      e.dataTransfer.effectAllowed = 'move';
+                      setDraggingEventId(evt.id);
+                    }}
+                    onDragEnd={() => {
+                      setDraggingEventId(null);
+                      setHoverLaneKey(null);
+                      setDragPreview(null);
+                    }}
+                    className={cn(
+                      'absolute left-1 right-1 cursor-grab overflow-hidden rounded border border-violet-200 bg-violet-50 px-2 py-1 text-left text-xs text-violet-900 shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing',
+                      isDraggingEvt && 'opacity-50',
+                    )}
                     style={{ top, height: Math.max(height, 28), zIndex: 5 }}
                     onClick={() => onEventClick(evt.id)}
                   >
@@ -1322,12 +1436,12 @@ function DayView({
       </div>
 
       {/* Drag preview tooltip */}
-      {dragPreview && draggingJobId && (
+      {dragPreview && isDraggingSomething && (
         <div
           className="pointer-events-none fixed z-50 rounded-lg bg-slate-900 px-3 py-2 text-sm text-white shadow-lg"
           style={{ left: dragPreview.x + 16, top: dragPreview.y - 64 }}
         >
-          Move visit to {formatSnappedHour(dragPreview.snappedHour)} · {formatDateShort(date)} · {dragPreview.displayName}
+          Move {draggingEventId ? 'event' : 'visit'} to {formatSnappedHour(dragPreview.snappedHour)} · {formatDateShort(date)} · {dragPreview.displayName}
         </div>
       )}
 
@@ -1587,12 +1701,21 @@ function JobSlideOver({ jobId, onClose }: { jobId: string; onClose: () => void }
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (scope?: 'this' | 'this_and_future') =>
-      scope
-        ? jobsApi.occurrenceDelete(jobId, { scope }).then(() => {})
-        : jobsApi.delete(jobId),
-    onSuccess: () => {
+    mutationFn: async (scope?: 'this' | 'this_and_future') => {
+      if (scope) {
+        const res = await jobsApi.occurrenceDelete(jobId, { scope });
+        return { skippedJobs: res.item.skippedJobs ?? [] };
+      }
+      await jobsApi.delete(jobId);
+      return { skippedJobs: [] as { id: string; jobNumber: string }[] };
+    },
+    onSuccess: (res) => {
       invalidate();
+      if (res.skippedJobs.length > 0) {
+        const nums = res.skippedJobs.map((j) => `#${j.jobNumber}`).join(', ');
+        setError(`Skipped ${nums} (marked as done with invoice)`);
+        return;
+      }
       onClose();
     },
     onError: (err) => setError(err instanceof ApiClientError ? err.message : 'Failed to delete job'),

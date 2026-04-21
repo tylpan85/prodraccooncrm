@@ -47,6 +47,7 @@ export {
   customerListQuerySchema,
   searchDuplicatesQuerySchema,
   customerSummaryDtoSchema,
+  customerSummaryAddressSchema,
   customerDtoSchema,
   customerAddressDtoSchema,
   customerPhoneDtoSchema,
@@ -63,6 +64,7 @@ export type {
   CustomerListQuery,
   SearchDuplicatesQuery,
   CustomerSummaryDto,
+  CustomerSummaryAddress,
   CustomerDto,
   CustomerAddressDto,
   CustomerPhoneDto,
@@ -77,6 +79,8 @@ export {
   jobListQuerySchema,
   jobSummaryDtoSchema,
   jobDtoSchema,
+  jobServiceItemInputSchema,
+  jobServiceItemDtoSchema,
 } from './schemas/jobs';
 export type {
   CreateJobRequest,
@@ -86,6 +90,8 @@ export type {
   JobListQuery,
   JobSummaryDto,
   JobDto,
+  JobServiceItemInput,
+  JobServiceItemDto,
 } from './schemas/jobs';
 export {
   createEventRequestSchema,
@@ -102,12 +108,16 @@ export {
   editInvoiceRequestSchema,
   invoiceDtoSchema,
   invoiceSummaryDtoSchema,
+  invoiceLineItemInputSchema,
+  invoiceLineItemDtoSchema,
 } from './schemas/invoices';
 export type {
   InvoiceListQuery,
   EditInvoiceRequest,
   InvoiceDto,
   InvoiceSummaryDto,
+  InvoiceLineItemInput,
+  InvoiceLineItemDto,
 } from './schemas/invoices';
 export {
   recurrenceRuleInputSchema,
@@ -123,3 +133,20 @@ export type {
   OccurrenceEditRequest,
   OccurrenceDeleteRequest,
 } from './schemas/recurring';
+export {
+  customerNoteDtoSchema,
+  createNoteOpSchema,
+  updateNoteOpSchema,
+  deleteNoteOpSchema,
+  noteOpSchema,
+  noteOpsSchema,
+  jobNotesResponseSchema,
+} from './schemas/notes';
+export type {
+  CustomerNoteDto,
+  CreateNoteOp,
+  UpdateNoteOp,
+  DeleteNoteOp,
+  NoteOp,
+  JobNotesResponse,
+} from './schemas/notes';

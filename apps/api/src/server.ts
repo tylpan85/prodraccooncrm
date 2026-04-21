@@ -27,7 +27,10 @@ async function main() {
   });
 
   await fastify.register(cors, {
-    origin: ['http://localhost:3000', 'http://localhost:3100'],
+    origin:
+      env.NODE_ENV === 'development'
+        ? true
+        : ['http://localhost:3000', 'http://localhost:3100'],
     credentials: true,
   });
 

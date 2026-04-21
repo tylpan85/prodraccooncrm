@@ -91,6 +91,7 @@ async function createFixtureCustomer(access: string) {
       firstName: name,
       customerType: 'Homeowner',
       primaryAddress: { street: '100 Main', city: 'Austin', state: 'TX', zip: '78701' },
+      phones: [{ value: '555-0100' }],
     },
   });
   const body = JSON.parse(res.body);
@@ -560,6 +561,85 @@ describe('Recurring Phase 10', () => {
     const body = JSON.parse(res.payload);
     expect(body.item).toHaveProperty('extended');
     expect(body.item).toHaveProperty('generated');
+  });
+
+  it('horizon extension replicates this_and_future notes onto newly materialized occurrences', async () => {
+    const access = await login();
+
+    const jobId = await createScheduledJob(access);
+    const attachRes = await app.inject({
+      method: 'POST',
+      url: `/api/jobs/${jobId}/recurrence`,
+      cookies: { oc_access: access },
+      payload: {
+        recurrenceFrequency: 'weekly',
+        recurrenceInterval: 1,
+        recurrenceDayOfWeek: ['FRI'],
+        recurrenceEndMode: 'on_date',
+        recurrenceEndDate: '2026-05-08',
+      },
+    });
+    expect(attachRes.statusCode).toBe(201);
+    const horizonSeriesId = JSON.parse(attachRes.payload).item.seriesId;
+
+    const noteRes = await app.inject({
+      method: 'POST',
+      url: `/api/jobs/${jobId}/occurrence-edit`,
+      cookies: { oc_access: access },
+      payload: {
+        scope: 'this_and_future',
+        changes: {},
+        noteOps: [{ op: 'create', tempId: 'tmp-h1', content: 'Horizon test note' }],
+      },
+    });
+    expect(noteRes.statusCode).toBe(200);
+    const mappings = JSON.parse(noteRes.payload).item.noteMappings;
+    expect(mappings).toHaveLength(1);
+    const noteGroupId = mappings[0].noteGroupId;
+
+    const initialNotes = await prisma.customerNote.findMany({
+      where: { noteGroupId },
+      select: { jobId: true },
+    });
+    expect(initialNotes.length).toBeGreaterThanOrEqual(4);
+
+    const jobsBefore = await prisma.job.findMany({
+      where: { recurringSeriesId: horizonSeriesId, deletedFromSeriesAt: null },
+      select: { id: true },
+    });
+    const beforeIds = new Set(jobsBefore.map((j) => j.id));
+
+    await prisma.recurringSeries.update({
+      where: { id: horizonSeriesId },
+      data: {
+        recurrenceEndDate: new Date('2026-07-24'),
+        materializationHorizonUntil: new Date('2026-05-08'),
+      },
+    });
+
+    const extRes = await app.inject({
+      method: 'POST',
+      url: '/api/recurring-series/extend-horizons',
+      cookies: { oc_access: access },
+    });
+    expect(extRes.statusCode).toBe(200);
+    expect(JSON.parse(extRes.payload).item.generated).toBeGreaterThan(0);
+
+    const jobsAfter = await prisma.job.findMany({
+      where: { recurringSeriesId: horizonSeriesId, deletedFromSeriesAt: null },
+      select: { id: true },
+    });
+    const newIds = jobsAfter.map((j) => j.id).filter((id) => !beforeIds.has(id));
+    expect(newIds.length).toBeGreaterThan(0);
+
+    const newNotes = await prisma.customerNote.findMany({
+      where: { noteGroupId, jobId: { in: newIds } },
+      select: { jobId: true, content: true },
+    });
+    expect(newNotes).toHaveLength(newIds.length);
+    for (const n of newNotes) {
+      expect(n.content).toBe('Horizon test note');
+    }
   });
 
 });

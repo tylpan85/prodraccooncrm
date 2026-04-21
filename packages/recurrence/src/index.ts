@@ -423,15 +423,15 @@ export function computeHorizonDate(ruleOrFrequency: RecurrenceRule | string): Da
   if (rule.recurrenceEndMode === 'never') {
     switch (rule.recurrenceFrequency) {
       case 'daily':
-        return new Date(now.getFullYear(), now.getMonth() + 6, now.getDate());
+        return new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
       case 'weekly':
-        return new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
+        return new Date(now.getFullYear() + 3, now.getMonth(), now.getDate());
       case 'monthly':
-        return new Date(now.getFullYear() + 2, now.getMonth(), now.getDate());
+        return new Date(now.getFullYear() + 10, now.getMonth(), now.getDate());
       case 'yearly':
-        return new Date(now.getFullYear() + 5, now.getMonth(), now.getDate());
+        return new Date(now.getFullYear() + 50, now.getMonth(), now.getDate());
       default:
-        return new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
+        return new Date(now.getFullYear() + 3, now.getMonth(), now.getDate());
     }
   }
 
