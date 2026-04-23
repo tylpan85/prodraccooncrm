@@ -22,7 +22,7 @@ export interface ProcessNoteOpsInput {
 export interface ProcessedNoteTempMapping {
   tempId: string;
   noteId: string;
-  noteGroupId: string;
+  noteGroupId: string | null;
 }
 
 /**
@@ -110,15 +110,23 @@ export async function processNoteOps({
       if (!existing) {
         throw new ApiError(ERROR_CODES.NOTE_NOT_FOUND, 404, 'Note not found');
       }
-      // Scope applies to note-group members whose job is in our target set.
-      await tx.customerNote.updateMany({
-        where: {
-          organizationId: orgId,
-          noteGroupId: existing.noteGroupId,
-          jobId: { in: targetJobIds },
-        },
-        data: { content: op.content },
-      });
+      if (existing.noteGroupId === null) {
+        // Customer-level note: not part of a series, edit the single row.
+        await tx.customerNote.update({
+          where: { id: op.id },
+          data: { content: op.content },
+        });
+      } else {
+        // Scope applies to note-group members whose job is in our target set.
+        await tx.customerNote.updateMany({
+          where: {
+            organizationId: orgId,
+            noteGroupId: existing.noteGroupId,
+            jobId: { in: targetJobIds },
+          },
+          data: { content: op.content },
+        });
+      }
       continue;
     }
 
@@ -130,13 +138,111 @@ export async function processNoteOps({
     if (!existing) {
       throw new ApiError(ERROR_CODES.NOTE_NOT_FOUND, 404, 'Note not found');
     }
-    await tx.customerNote.deleteMany({
-      where: {
-        organizationId: orgId,
-        noteGroupId: existing.noteGroupId,
-        jobId: { in: targetJobIds },
-      },
+    if (existing.noteGroupId === null) {
+      // Customer-level note: delete the single row.
+      await tx.customerNote.delete({ where: { id: op.id } });
+    } else {
+      await tx.customerNote.deleteMany({
+        where: {
+          organizationId: orgId,
+          noteGroupId: existing.noteGroupId,
+          jobId: { in: targetJobIds },
+        },
+      });
+    }
+  }
+
+  return mappings;
+}
+
+// ---------------------------------------------------------------------------
+// Customer-level note ops (jobId = null, noteGroupId = null on create).
+// Used by the customer detail page where there is no job/scope context.
+// Edits/deletes that target a grouped note (one created from a job) propagate
+// to the entire group so the "single source of truth" stays consistent.
+// ---------------------------------------------------------------------------
+
+export interface ProcessCustomerNoteOpsInput {
+  tx: Tx;
+  orgId: string;
+  customerId: string;
+  authorUserId: string;
+  noteOps: NoteOp[];
+}
+
+export async function processCustomerNoteOps({
+  tx,
+  orgId,
+  customerId,
+  authorUserId,
+  noteOps,
+}: ProcessCustomerNoteOpsInput): Promise<ProcessedNoteTempMapping[]> {
+  if (noteOps.length === 0) return [];
+
+  const mappings: ProcessedNoteTempMapping[] = [];
+
+  for (const op of noteOps) {
+    if (op.op === 'create') {
+      const created = await tx.customerNote.create({
+        data: {
+          organizationId: orgId,
+          customerId,
+          jobId: null,
+          noteGroupId: null,
+          content: op.content,
+          authorUserId,
+        },
+        select: { id: true },
+      });
+      mappings.push({ tempId: op.tempId, noteId: created.id, noteGroupId: null });
+      continue;
+    }
+
+    if (op.op === 'update') {
+      const existing = await tx.customerNote.findFirst({
+        where: { id: op.id, organizationId: orgId, customerId },
+        select: { noteGroupId: true },
+      });
+      if (!existing) {
+        throw new ApiError(ERROR_CODES.NOTE_NOT_FOUND, 404, 'Note not found');
+      }
+      if (existing.noteGroupId === null) {
+        await tx.customerNote.update({
+          where: { id: op.id },
+          data: { content: op.content },
+        });
+      } else {
+        await tx.customerNote.updateMany({
+          where: {
+            organizationId: orgId,
+            customerId,
+            noteGroupId: existing.noteGroupId,
+          },
+          data: { content: op.content },
+        });
+      }
+      continue;
+    }
+
+    // delete
+    const existing = await tx.customerNote.findFirst({
+      where: { id: op.id, organizationId: orgId, customerId },
+      select: { noteGroupId: true },
     });
+    if (!existing) {
+      throw new ApiError(ERROR_CODES.NOTE_NOT_FOUND, 404, 'Note not found');
+    }
+    if (existing.noteGroupId === null) {
+      await tx.customerNote.delete({ where: { id: op.id } });
+    } else {
+      await tx.customerNote.deleteMany({
+        where: {
+          organizationId: orgId,
+          customerId,
+          noteGroupId: existing.noteGroupId,
+        },
+      });
+    }
   }
 
   return mappings;

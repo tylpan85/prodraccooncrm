@@ -1,4 +1,12 @@
-import type { EditInvoiceRequest, InvoiceDto, InvoiceSummaryDto } from '@openclaw/shared';
+import type {
+  ChargeSavedCardRequest,
+  EditInvoiceRequest,
+  InvoiceDto,
+  InvoiceSummaryDto,
+  MarkInvoicePaidRequest,
+  SendInvoiceReceiptRequest,
+  SendInvoiceSmsRequest,
+} from '@openclaw/shared';
 import { apiFetch, apiItem } from './api-client';
 
 export interface InvoicesWindowResponse {
@@ -55,10 +63,25 @@ export const invoicesApi = {
   get: (id: string) => apiItem<InvoiceDto>(`/api/invoices/${id}`),
   edit: (id: string, body: EditInvoiceRequest) =>
     apiItem<InvoiceDto>(`/api/invoices/${id}`, { method: 'PATCH', body }),
-  send: (id: string) => apiItem<InvoiceDto>(`/api/invoices/${id}/send`, { method: 'POST' }),
-  markPaid: (id: string) =>
-    apiItem<InvoiceDto>(`/api/invoices/${id}/mark-paid`, { method: 'POST' }),
+  sendSms: (id: string, body: SendInvoiceSmsRequest) =>
+    apiItem<InvoiceDto>(`/api/invoices/${id}/send-sms`, { method: 'POST', body }),
+  sendReceipt: (id: string, body: SendInvoiceReceiptRequest) =>
+    apiItem<InvoiceDto>(`/api/invoices/${id}/send-receipt`, { method: 'POST', body }),
+  markPaid: (id: string, body: MarkInvoicePaidRequest) =>
+    apiItem<InvoiceDto>(`/api/invoices/${id}/mark-paid`, { method: 'POST', body }),
+  chargeSavedCard: (id: string, body: ChargeSavedCardRequest) =>
+    apiItem<InvoiceDto>(`/api/invoices/${id}/charge-saved-card`, { method: 'POST', body }),
+  reopen: (id: string) => apiItem<InvoiceDto>(`/api/invoices/${id}/reopen`, { method: 'POST' }),
   void: (id: string) => apiItem<InvoiceDto>(`/api/invoices/${id}/void`, { method: 'POST' }),
+  resyncFromJob: (id: string) =>
+    apiItem<InvoiceDto>(`/api/invoices/${id}/resync-from-job`, { method: 'POST' }),
   createForJob: (jobId: string) =>
     apiItem<InvoiceDto>(`/api/jobs/${jobId}/invoice`, { method: 'POST' }),
+  pdfUrl: (id: string) => `/api/invoices/${id}/pdf`,
+  publicPayUrl: (token: string) => {
+    const origin =
+      typeof window !== 'undefined' && window.location ? window.location.origin : '';
+    return `${origin}/pay/${token}`;
+  },
+  publicPdfUrl: (token: string) => `/api/public/invoices/${token}/pdf`,
 };

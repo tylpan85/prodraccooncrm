@@ -8,7 +8,7 @@ import {
   createUserRequestSchema,
   isValidTimezone,
   updateLeadSourceRequestSchema,
-  updateOrganizationRequestSchema,
+  updateOrganizationProfileRequestSchema,
   updateServiceRequestSchema,
   updateTeamMemberRequestSchema,
   updateUserRequestSchema,
@@ -75,19 +75,39 @@ export async function identityRoutes(fastify: FastifyInstance) {
     const org = await prisma.organization.findUnique({ where: { id: req.auth.orgId } });
     if (!org) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Organization not found');
     return reply.send({
-      item: { id: org.id, name: org.name, timezone: org.timezone },
+      item: {
+        id: org.id,
+        name: org.name,
+        timezone: org.timezone,
+        address: org.address,
+        phone: org.phone,
+        website: org.website,
+      },
     });
   });
 
   fastify.patch('/api/organizations/current', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
-    const body = updateOrganizationRequestSchema.parse(req.body);
+    const body = updateOrganizationProfileRequestSchema.parse(req.body);
     if (body.timezone && !isValidTimezone(body.timezone)) {
       throw new ApiError(ERROR_CODES.INVALID_TIMEZONE, 400, 'Timezone must be a valid IANA zone');
     }
+    const data: {
+      name?: string;
+      timezone?: string;
+      address?: string | null;
+      phone?: string | null;
+      website?: string | null;
+    } = {};
+    if (body.name !== undefined) data.name = body.name;
+    if (body.timezone !== undefined) data.timezone = body.timezone;
+    if (body.address !== undefined) data.address = body.address === '' ? null : body.address;
+    if (body.phone !== undefined) data.phone = body.phone === '' ? null : body.phone;
+    if (body.website !== undefined) data.website = body.website === '' ? null : body.website;
+
     const org = await prisma.organization.update({
       where: { id: req.auth.orgId },
-      data: body,
+      data,
     });
     await auditLog(prisma, {
       organizationId: req.auth.orgId,
@@ -97,7 +117,14 @@ export async function identityRoutes(fastify: FastifyInstance) {
       action: 'update',
     });
     return reply.send({
-      item: { id: org.id, name: org.name, timezone: org.timezone },
+      item: {
+        id: org.id,
+        name: org.name,
+        timezone: org.timezone,
+        address: org.address,
+        phone: org.phone,
+        website: org.website,
+      },
     });
   });
 

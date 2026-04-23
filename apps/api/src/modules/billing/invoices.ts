@@ -1,16 +1,33 @@
 import { type Prisma, type PrismaClient, prisma } from '@openclaw/db';
-import { ERROR_CODES, editInvoiceRequestSchema, invoiceListQuerySchema } from '@openclaw/shared';
+import {
+  chargeSavedCardRequestSchema,
+  ERROR_CODES,
+  editInvoiceRequestSchema,
+  invoiceListQuerySchema,
+  markInvoicePaidRequestSchema,
+  ringcentralIntegrationConfigSchema,
+  sendInvoiceReceiptRequestSchema,
+  sendInvoiceSmsRequestSchema,
+} from '@openclaw/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { auditLog } from '../../lib/audit.js';
 import { ApiError } from '../../lib/error-envelope.js';
+import { buildInvoicePdf } from '../../lib/invoice-pdf.js';
+import { newInvoicePublicToken } from '../../lib/invoice-token.js';
+import {
+  createOffSessionPaymentIntent,
+  getOrCreateStripeCustomer,
+  loadStripeConfig,
+} from '../../lib/stripe.js';
 import { requireAuth } from '../auth/guard.js';
+import { buildInvoiceDataFromJob } from '../scheduling/jobs.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-type Tx = Omit<
+export type Tx = Omit<
   PrismaClient,
   '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'
 >;
@@ -45,9 +62,14 @@ const INVOICE_INCLUDE = {
   job: { select: { jobNumber: true } },
   customer: { select: { displayName: true } },
   lineItems: { orderBy: { orderIndex: 'asc' } },
+  payments: {
+    orderBy: { paidAt: 'desc' },
+    include: { paymentMethod: { select: { name: true } } },
+  },
 } as const satisfies Prisma.InvoiceInclude;
 
 type InvoiceRecord = Prisma.InvoiceGetPayload<{ include: typeof INVOICE_INCLUDE }>;
+type InvoicePaymentRecord = InvoiceRecord['payments'][number];
 
 /**
  * Derive the effective status for the client. The DB stores `sent` but
@@ -62,6 +84,22 @@ function deriveStatus(inv: {
     return 'past_due';
   }
   return inv.status;
+}
+
+function invoicePaymentDto(p: InvoicePaymentRecord) {
+  return {
+    id: p.id,
+    paymentMethodId: p.paymentMethodId,
+    paymentMethodName: p.paymentMethod?.name ?? p.paymentMethodNameSnapshot,
+    source: p.source,
+    amountCents: p.amountCents,
+    reference: p.reference,
+    paidAt: p.paidAt.toISOString(),
+    recordedByUserId: p.recordedByUserId,
+    stripeChargeId: p.stripeChargeId,
+    stripePaymentIntentId: p.stripePaymentIntentId,
+    createdAt: p.createdAt.toISOString(),
+  };
 }
 
 function invoiceDto(inv: InvoiceRecord) {
@@ -86,13 +124,60 @@ function invoiceDto(inv: InvoiceRecord) {
       priceCents: li.priceCents,
       orderIndex: li.orderIndex,
     })),
+    payments: inv.payments.map(invoicePaymentDto),
     dueDate: inv.dueDate?.toISOString().slice(0, 10) ?? null,
     createdAt: inv.createdAt.toISOString(),
     sentAt: inv.sentAt?.toISOString() ?? null,
     paidAt: inv.paidAt?.toISOString() ?? null,
     voidedAt: inv.voidedAt?.toISOString() ?? null,
     updatedAt: inv.updatedAt.toISOString(),
+    publicToken: inv.publicToken,
+    lastSentVia: inv.lastSentVia,
+    lastSentAt: inv.lastSentAt?.toISOString() ?? null,
+    lockedAt: inv.lockedAt?.toISOString() ?? null,
+    companyNameSnapshot: inv.companyNameSnapshot,
+    companyAddressSnapshot: inv.companyAddressSnapshot,
+    companyPhoneSnapshot: inv.companyPhoneSnapshot,
+    companyWebsiteSnapshot: inv.companyWebsiteSnapshot,
+    serviceDateSnapshot: inv.serviceDateSnapshot?.toISOString() ?? null,
   };
+}
+
+/**
+ * Build a company-details snapshot from the organization record.
+ * Only used when the invoice is first sent or marked paid; the snapshot
+ * is preserved on the invoice so historical/public views remain stable
+ * even if org details are later edited.
+ */
+export async function buildCompanySnapshot(
+  tx: Tx,
+  orgId: string,
+): Promise<{
+  companyNameSnapshot: string;
+  companyAddressSnapshot: string | null;
+  companyPhoneSnapshot: string | null;
+  companyWebsiteSnapshot: string | null;
+}> {
+  const org = await tx.organization.findUniqueOrThrow({
+    where: { id: orgId },
+    select: { name: true, address: true, phone: true, website: true },
+  });
+  return {
+    companyNameSnapshot: org.name,
+    companyAddressSnapshot: org.address,
+    companyPhoneSnapshot: org.phone,
+    companyWebsiteSnapshot: org.website,
+  };
+}
+
+function ensureUnlocked(inv: { lockedAt: Date | null }) {
+  if (inv.lockedAt) {
+    throw new ApiError(
+      ERROR_CODES.INVOICE_LOCKED,
+      400,
+      'Invoice is locked (paid via Stripe) and cannot be modified',
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +402,81 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
     return reply.send({ item: invoiceDto(inv) });
   });
 
+  // ── Download PDF (auth'd) ────────────────────────────────────────────
+  fastify.get('/api/invoices/:id/pdf', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const inv = await prisma.invoice.findFirst({
+      where: { id, organizationId: req.auth.orgId },
+      include: INVOICE_INCLUDE,
+    });
+    if (!inv) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Invoice not found');
+
+    const dto = invoiceDto(inv);
+
+    // Live fallback for legacy invoices with null snapshots: read org + job
+    // at render time so existing invoices display company details + service
+    // date without requiring a backfill migration.
+    let companyNameSnapshot = dto.companyNameSnapshot;
+    let companyAddressSnapshot = dto.companyAddressSnapshot;
+    let companyPhoneSnapshot = dto.companyPhoneSnapshot;
+    let companyWebsiteSnapshot = dto.companyWebsiteSnapshot;
+    let serviceDate: string | null = dto.serviceDateSnapshot;
+    if (!companyNameSnapshot) {
+      const org = await prisma.organization.findUnique({
+        where: { id: inv.organizationId },
+        select: { name: true, address: true, phone: true, website: true },
+      });
+      if (org) {
+        companyNameSnapshot = org.name;
+        companyAddressSnapshot = org.address;
+        companyPhoneSnapshot = org.phone;
+        companyWebsiteSnapshot = org.website;
+      }
+    }
+    if (!serviceDate) {
+      const job = await prisma.job.findUnique({
+        where: { id: inv.jobId },
+        select: { scheduledStartAt: true },
+      });
+      if (job) serviceDate = job.scheduledStartAt.toISOString();
+    }
+
+    const buf = await buildInvoicePdf({
+      invoiceNumber: dto.invoiceNumber,
+      status: dto.status,
+      createdAt: dto.createdAt,
+      dueDate: dto.dueDate,
+      paidAt: dto.paidAt,
+      customerDisplayName: dto.customerDisplayName,
+      serviceNameSnapshot: dto.serviceNameSnapshot,
+      serviceDate,
+      subtotalCents: dto.subtotalCents,
+      totalCents: dto.totalCents,
+      paidCents: dto.paidCents,
+      amountDueCents: dto.amountDueCents,
+      lineItems: dto.lineItems.map((li) => ({
+        description: li.description,
+        priceCents: li.priceCents,
+      })),
+      payments: dto.payments.map((p) => ({
+        paymentMethodName: p.paymentMethodName,
+        amountCents: p.amountCents,
+        reference: p.reference,
+        paidAt: p.paidAt,
+      })),
+      companyNameSnapshot,
+      companyAddressSnapshot,
+      companyPhoneSnapshot,
+      companyWebsiteSnapshot,
+    });
+
+    return reply
+      .header('Content-Type', 'application/pdf')
+      .header('Content-Disposition', `inline; filename="invoice-${dto.invoiceNumber}.pdf"`)
+      .send(buf);
+  });
+
   // ── Manual create (fallback) ─────────────────────────────────────────
   fastify.post('/api/jobs/:id/invoice', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
@@ -331,6 +491,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
         customerId: true,
         titleOrSummary: true,
         priceCents: true,
+        scheduledStartAt: true,
         invoice: { select: { id: true } },
         serviceItems: {
           select: {
@@ -352,23 +513,11 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
       );
     }
 
-    const lines =
-      job.serviceItems.length > 0
-        ? job.serviceItems.map((item) => ({
-            description: item.service?.name ?? item.nameSnapshot ?? 'Service',
-            priceCents: item.priceCents,
-            orderIndex: item.orderIndex,
-          }))
-        : [
-            {
-              description: job.titleOrSummary ?? 'Service',
-              priceCents: job.priceCents,
-              orderIndex: 0,
-            },
-          ];
+    const snap = buildInvoiceDataFromJob(job);
 
     const inv = await prisma.$transaction(async (tx) => {
       const invoiceNumber = await nextInvoiceNumber(orgId, tx);
+      const companySnap = await buildCompanySnapshot(tx, orgId);
       const created = await tx.invoice.create({
         data: {
           organizationId: orgId,
@@ -380,10 +529,13 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           totalCents: job.priceCents,
           amountDueCents: job.priceCents,
           paidCents: 0,
-          serviceNameSnapshot: job.titleOrSummary,
-          servicePriceCentsSnapshot: job.priceCents,
+          serviceNameSnapshot: snap.serviceNameSnapshot,
+          servicePriceCentsSnapshot: snap.servicePriceCentsSnapshot,
+          serviceDateSnapshot: snap.serviceDateSnapshot,
+          ...companySnap,
           dueDate: null,
-          lineItems: { create: lines },
+          publicToken: newInvoicePublicToken(),
+          lineItems: { create: snap.lineItems },
         },
         include: INVOICE_INCLUDE,
       });
@@ -410,9 +562,10 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
 
     const existing = await prisma.invoice.findFirst({
       where: { id, organizationId: orgId },
-      select: { id: true, status: true, paidCents: true },
+      select: { id: true, status: true, paidCents: true, lockedAt: true },
     });
     if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Invoice not found');
+    ensureUnlocked(existing);
     if (existing.status !== 'draft') {
       throw new ApiError(ERROR_CODES.INVOICE_NOT_DRAFT, 400, 'Only draft invoices can be edited');
     }
@@ -431,6 +584,16 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
       data.subtotalCents = total;
       data.totalCents = total;
       data.amountDueCents = Math.max(0, total - existing.paidCents);
+      // Keep scalar snapshots in sync with the first line item so list
+      // views and PDF stay coherent. Only override when the caller did not
+      // pass them explicitly.
+      const first = body.lineItems[0];
+      if (body.serviceNameSnapshot === undefined) {
+        data.serviceNameSnapshot = first?.description ?? null;
+      }
+      if (body.servicePriceCentsSnapshot === undefined) {
+        data.servicePriceCentsSnapshot = first?.priceCents ?? null;
+      }
     } else if (body.servicePriceCentsSnapshot !== undefined) {
       data.subtotalCents = body.servicePriceCentsSnapshot;
       data.totalCents = body.servicePriceCentsSnapshot;
@@ -469,25 +632,76 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
     return reply.send({ item: invoiceDto(updated) });
   });
 
-  // ── Send (draft → sent) ──────────────────────────────────────────────
-  fastify.post('/api/invoices/:id/send', async (req, reply) => {
+  // ── Resync from job (draft only) ──────────────────────────────────────
+  // Refills line items + scalar snapshots from the source job. Useful for
+  // invoices created before the job's service items were finalized.
+  fastify.post('/api/invoices/:id/resync-from-job', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
     const { id } = idParam.parse(req.params);
     const orgId = req.auth.orgId;
 
     const existing = await prisma.invoice.findFirst({
       where: { id, organizationId: orgId },
-      select: { id: true, status: true },
+      select: {
+        id: true,
+        status: true,
+        paidCents: true,
+        lockedAt: true,
+        jobId: true,
+      },
     });
     if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Invoice not found');
+    ensureUnlocked(existing);
     if (existing.status !== 'draft') {
-      throw new ApiError(ERROR_CODES.INVOICE_NOT_DRAFT, 400, 'Only draft invoices can be sent');
+      throw new ApiError(ERROR_CODES.INVOICE_NOT_DRAFT, 400, 'Only draft invoices can be resynced');
     }
 
-    const updated = await prisma.invoice.update({
-      where: { id },
-      data: { status: 'sent', sentAt: new Date() },
-      include: INVOICE_INCLUDE,
+    const job = await prisma.job.findFirst({
+      where: { id: existing.jobId, organizationId: orgId },
+      select: {
+        titleOrSummary: true,
+        priceCents: true,
+        scheduledStartAt: true,
+        serviceItems: {
+          select: {
+            priceCents: true,
+            orderIndex: true,
+            nameSnapshot: true,
+            service: { select: { name: true } },
+          },
+          orderBy: { orderIndex: 'asc' },
+        },
+      },
+    });
+    if (!job) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Source job not found');
+
+    const snap = buildInvoiceDataFromJob(job);
+    const total = snap.lineItems.reduce((sum, li) => sum + li.priceCents, 0);
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.invoiceLineItem.deleteMany({ where: { invoiceId: id } });
+      if (snap.lineItems.length > 0) {
+        await tx.invoiceLineItem.createMany({
+          data: snap.lineItems.map((li) => ({
+            invoiceId: id,
+            description: li.description,
+            priceCents: li.priceCents,
+            orderIndex: li.orderIndex,
+          })),
+        });
+      }
+      return tx.invoice.update({
+        where: { id },
+        data: {
+          serviceNameSnapshot: snap.serviceNameSnapshot,
+          servicePriceCentsSnapshot: snap.servicePriceCentsSnapshot,
+          serviceDateSnapshot: snap.serviceDateSnapshot,
+          subtotalCents: total,
+          totalCents: total,
+          amountDueCents: Math.max(0, total - existing.paidCents),
+        },
+        include: INVOICE_INCLUDE,
+      });
     });
 
     await auditLog(prisma, {
@@ -495,40 +709,196 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
       actorUserId: req.auth.sub,
       entityType: 'invoice',
       entityId: id,
-      action: 'send',
+      action: 'resync_from_job',
     });
 
     return reply.send({ item: invoiceDto(updated) });
   });
 
-  // ── Mark paid (sent → paid) ──────────────────────────────────────────
+  // ── Send via SMS (draft → sent, or re-send while sent) ────────────────
+  // Requires the RingCentral integration to be enabled and configured
+  // (jwt + fromNumber). Snapshots company details on first send so the
+  // public pay page and PDF stay stable if org settings are later edited.
+  fastify.post('/api/invoices/:id/send-sms', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const orgId = req.auth.orgId;
+    const body = sendInvoiceSmsRequestSchema.parse(req.body);
+
+    const existing = await prisma.invoice.findFirst({
+      where: { id, organizationId: orgId },
+      select: {
+        id: true,
+        status: true,
+        sentAt: true,
+        lockedAt: true,
+        invoiceNumber: true,
+        publicToken: true,
+        companyNameSnapshot: true,
+      },
+    });
+    if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Invoice not found');
+    ensureUnlocked(existing);
+    if (existing.status !== 'draft' && existing.status !== 'sent') {
+      throw new ApiError(
+        ERROR_CODES.INVOICE_NOT_PAYABLE,
+        400,
+        'Only draft or sent invoices can be sent via SMS',
+      );
+    }
+
+    const integration = await prisma.orgIntegration.findUnique({
+      where: { organizationId_kind: { organizationId: orgId, kind: 'ringcentral' } },
+    });
+    if (!integration || !integration.enabled) {
+      throw new ApiError(
+        ERROR_CODES.INTEGRATION_DISABLED,
+        400,
+        'RingCentral integration is disabled. Enable it in Settings to send SMS.',
+      );
+    }
+    const cfg = ringcentralIntegrationConfigSchema.parse(integration.config ?? {});
+    if (!cfg.jwt || !cfg.fromNumber) {
+      throw new ApiError(
+        ERROR_CODES.INTEGRATION_NOT_CONFIGURED,
+        400,
+        'RingCentral integration is missing JWT or fromNumber. Configure it in Settings.',
+      );
+    }
+
+    // TODO(ringcentral): wire the actual RingCentral SMS dispatch here.
+    // For now we log the intent so the rest of the flow is testable
+    // without the third-party dependency.
+    fastify.log.info(
+      {
+        invoiceId: id,
+        invoiceNumber: existing.invoiceNumber,
+        toPhone: body.toPhone,
+        fromNumber: cfg.fromNumber,
+      },
+      'invoice.sms.dispatch (stub)',
+    );
+
+    const now = new Date();
+    const updated = await prisma.$transaction(async (tx) => {
+      const snapshot = existing.companyNameSnapshot
+        ? null
+        : await buildCompanySnapshot(tx, orgId);
+      return tx.invoice.update({
+        where: { id },
+        data: {
+          status: 'sent',
+          sentAt: existing.sentAt ?? now,
+          lastSentVia: 'sms',
+          lastSentAt: now,
+          ...(snapshot ?? {}),
+        },
+        include: INVOICE_INCLUDE,
+      });
+    });
+
+    await auditLog(prisma, {
+      organizationId: orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'invoice',
+      entityId: id,
+      action: 'send_sms',
+      payload: { toPhone: body.toPhone },
+    });
+
+    return reply.send({ item: invoiceDto(updated) });
+  });
+
+  // ── Mark paid (manual; sent → paid) ──────────────────────────────────
+  // Stripe-source payment methods are rejected here — those are recorded
+  // only via the Stripe webhook. Reference is required for methods that
+  // declare a referenceLabel (e.g. Zelle confirmation #).
   fastify.post('/api/invoices/:id/mark-paid', async (req, reply) => {
     if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
     const { id } = idParam.parse(req.params);
     const orgId = req.auth.orgId;
+    const body = markInvoicePaidRequestSchema.parse(req.body);
 
     const existing = await prisma.invoice.findFirst({
       where: { id, organizationId: orgId },
-      select: { id: true, status: true, totalCents: true },
+      select: {
+        id: true,
+        status: true,
+        totalCents: true,
+        lockedAt: true,
+        sentAt: true,
+        companyNameSnapshot: true,
+      },
     });
     if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Invoice not found');
-    if (existing.status !== 'sent') {
+    ensureUnlocked(existing);
+    if (existing.status === 'paid') {
+      throw new ApiError(ERROR_CODES.INVOICE_ALREADY_PAID, 400, 'Invoice is already paid');
+    }
+    if (existing.status !== 'draft' && existing.status !== 'sent' && existing.status !== 'past_due') {
       throw new ApiError(
-        ERROR_CODES.VALIDATION_FAILED,
+        ERROR_CODES.INVOICE_NOT_PAYABLE,
         400,
-        'Only sent invoices can be marked as paid',
+        'Only draft, sent, or past-due invoices can be marked as paid',
       );
     }
 
-    const updated = await prisma.invoice.update({
-      where: { id },
-      data: {
-        status: 'paid',
-        paidAt: new Date(),
-        paidCents: existing.totalCents,
-        amountDueCents: 0,
-      },
-      include: INVOICE_INCLUDE,
+    const method = await prisma.paymentMethod.findFirst({
+      where: { id: body.paymentMethodId, organizationId: orgId },
+    });
+    if (!method) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Payment method not found');
+    if (!method.active) {
+      throw new ApiError(
+        ERROR_CODES.PAYMENT_METHOD_INACTIVE,
+        400,
+        'Payment method is inactive',
+      );
+    }
+    if (method.source === 'stripe') {
+      throw new ApiError(
+        ERROR_CODES.VALIDATION_FAILED,
+        400,
+        'Stripe payments are recorded automatically. Use a manual method here.',
+      );
+    }
+    if (method.referenceLabel && !body.reference) {
+      throw new ApiError(
+        ERROR_CODES.VALIDATION_FAILED,
+        400,
+        `${method.referenceLabel} is required for ${method.name} payments`,
+      );
+    }
+
+    const paidAt = body.paidAt ? new Date(body.paidAt) : new Date();
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const snapshot = existing.companyNameSnapshot
+        ? null
+        : await buildCompanySnapshot(tx, orgId);
+      await tx.invoicePayment.create({
+        data: {
+          organizationId: orgId,
+          invoiceId: id,
+          paymentMethodId: method.id,
+          paymentMethodNameSnapshot: method.name,
+          source: 'manual',
+          amountCents: existing.totalCents,
+          reference: body.reference ?? null,
+          paidAt,
+          recordedByUserId: req.auth?.sub ?? null,
+        },
+      });
+      return tx.invoice.update({
+        where: { id },
+        data: {
+          status: 'paid',
+          paidAt,
+          paidCents: existing.totalCents,
+          amountDueCents: 0,
+          ...(snapshot ?? {}),
+        },
+        include: INVOICE_INCLUDE,
+      });
     });
 
     await auditLog(prisma, {
@@ -537,10 +907,208 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
       entityType: 'invoice',
       entityId: id,
       action: 'mark_paid',
-      payload: { paidCents: existing.totalCents },
+      payload: {
+        paymentMethodId: method.id,
+        paymentMethodName: method.name,
+        amountCents: existing.totalCents,
+        reference: body.reference ?? null,
+      },
     });
 
     return reply.send({ item: invoiceDto(updated) });
+  });
+
+  // ── Charge a saved card off-session ──────────────────────────────────
+  // Fires a Stripe PaymentIntent against a saved CustomerPaymentMethod.
+  // The payment_intent.succeeded webhook records the InvoicePayment row
+  // and locks the invoice — this endpoint only initiates the charge and
+  // persists stripePaymentIntentId for correlation.
+  fastify.post('/api/invoices/:id/charge-saved-card', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const orgId = req.auth.orgId;
+    const body = chargeSavedCardRequestSchema.parse(req.body);
+
+    const existing = await prisma.invoice.findFirst({
+      where: { id, organizationId: orgId },
+      select: {
+        id: true,
+        status: true,
+        customerId: true,
+        amountDueCents: true,
+        lockedAt: true,
+      },
+    });
+    if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Invoice not found');
+    ensureUnlocked(existing);
+    if (existing.status === 'paid') {
+      throw new ApiError(ERROR_CODES.INVOICE_ALREADY_PAID, 400, 'Invoice is already paid');
+    }
+    if (existing.status !== 'draft' && existing.status !== 'sent' && existing.status !== 'past_due') {
+      throw new ApiError(
+        ERROR_CODES.INVOICE_NOT_PAYABLE,
+        400,
+        'Only draft, sent, or past-due invoices can be charged',
+      );
+    }
+    if (existing.amountDueCents <= 0) {
+      throw new ApiError(
+        ERROR_CODES.INVOICE_NOT_PAYABLE,
+        400,
+        'Invoice has no outstanding balance',
+      );
+    }
+
+    const pm = await prisma.customerPaymentMethod.findFirst({
+      where: {
+        id: body.paymentMethodId,
+        organizationId: orgId,
+        customerId: existing.customerId,
+      },
+    });
+    if (!pm) throw new ApiError(ERROR_CODES.CARD_NOT_FOUND, 404, 'Card not found');
+
+    const cfg = await loadStripeConfig(orgId);
+    const stripeCustomerId = await getOrCreateStripeCustomer({
+      secretKey: cfg.secretKey,
+      organizationId: orgId,
+      customerId: existing.customerId,
+    });
+    const intent = await createOffSessionPaymentIntent({
+      secretKey: cfg.secretKey,
+      amountCents: existing.amountDueCents,
+      stripeCustomerId,
+      paymentMethodId: pm.stripePaymentMethodId,
+      metadata: {
+        organizationId: orgId,
+        invoiceId: id,
+        customerId: existing.customerId,
+        flow: 'charge_saved_card',
+      },
+    });
+
+    const updated = await prisma.invoice.update({
+      where: { id },
+      data: { stripePaymentIntentId: intent.id },
+      include: INVOICE_INCLUDE,
+    });
+
+    await auditLog(prisma, {
+      organizationId: orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'invoice',
+      entityId: id,
+      action: 'stripe_charge_initiated',
+      payload: {
+        paymentMethodId: pm.id,
+        stripePaymentMethodId: pm.stripePaymentMethodId,
+        stripePaymentIntentId: intent.id,
+        amountCents: existing.amountDueCents,
+        status: intent.status,
+      },
+    });
+
+    return reply.send({ item: invoiceDto(updated) });
+  });
+
+  // ── Reopen (paid → sent or draft) ────────────────────────────────────
+  // Paid-via-Stripe invoices are locked and cannot be reopened.
+  // If the invoice was ever sent (lastSentAt is set), reopen to `sent`;
+  // otherwise back to `draft`. All recorded payments are removed.
+  fastify.post('/api/invoices/:id/reopen', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const orgId = req.auth.orgId;
+
+    const existing = await prisma.invoice.findFirst({
+      where: { id, organizationId: orgId },
+      select: {
+        id: true,
+        status: true,
+        totalCents: true,
+        lockedAt: true,
+        lastSentAt: true,
+      },
+    });
+    if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Invoice not found');
+    ensureUnlocked(existing);
+    if (existing.status !== 'paid') {
+      throw new ApiError(
+        ERROR_CODES.INVOICE_NOT_PAID_CANNOT_REOPEN,
+        400,
+        'Only paid invoices can be reopened',
+      );
+    }
+
+    const newStatus = existing.lastSentAt ? 'sent' : 'draft';
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.invoicePayment.deleteMany({ where: { invoiceId: id } });
+      return tx.invoice.update({
+        where: { id },
+        data: {
+          status: newStatus,
+          paidAt: null,
+          paidCents: 0,
+          amountDueCents: existing.totalCents,
+        },
+        include: INVOICE_INCLUDE,
+      });
+    });
+
+    await auditLog(prisma, {
+      organizationId: orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'invoice',
+      entityId: id,
+      action: 'reopen',
+      payload: { newStatus },
+    });
+
+    return reply.send({ item: invoiceDto(updated) });
+  });
+
+  // ── Send receipt (paid only) ─────────────────────────────────────────
+  // Stub: actual email dispatch is wired separately. We log the intent
+  // and audit the action so the UI flow is fully testable.
+  fastify.post('/api/invoices/:id/send-receipt', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const orgId = req.auth.orgId;
+    const body = sendInvoiceReceiptRequestSchema.parse(req.body);
+
+    const existing = await prisma.invoice.findFirst({
+      where: { id, organizationId: orgId },
+      select: { id: true, status: true, invoiceNumber: true },
+    });
+    if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Invoice not found');
+    if (existing.status !== 'paid') {
+      throw new ApiError(
+        ERROR_CODES.VALIDATION_FAILED,
+        400,
+        'Receipts can only be sent for paid invoices',
+      );
+    }
+
+    fastify.log.info(
+      {
+        invoiceId: id,
+        invoiceNumber: existing.invoiceNumber,
+        toEmail: body.toEmail,
+      },
+      'invoice.receipt.send (stub)',
+    );
+
+    await auditLog(prisma, {
+      organizationId: orgId,
+      actorUserId: req.auth.sub,
+      entityType: 'invoice',
+      entityId: id,
+      action: 'send_receipt',
+      payload: { toEmail: body.toEmail },
+    });
+
+    return reply.send({ ok: true });
   });
 
   // ── Void (admin only; any non-paid → void) ──────────────────────────
@@ -551,9 +1119,10 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
 
     const existing = await prisma.invoice.findFirst({
       where: { id, organizationId: orgId },
-      select: { id: true, status: true },
+      select: { id: true, status: true, lockedAt: true },
     });
     if (!existing) throw new ApiError(ERROR_CODES.NOT_FOUND, 404, 'Invoice not found');
+    ensureUnlocked(existing);
     if (existing.status === 'paid') {
       throw new ApiError(ERROR_CODES.VALIDATION_FAILED, 400, 'Cannot void a paid invoice');
     }

@@ -110,6 +110,11 @@ export {
   invoiceSummaryDtoSchema,
   invoiceLineItemInputSchema,
   invoiceLineItemDtoSchema,
+  invoicePaymentDtoSchema,
+  publicInvoiceDtoSchema,
+  sendInvoiceSmsRequestSchema,
+  sendInvoiceReceiptRequestSchema,
+  markInvoicePaidRequestSchema,
 } from './schemas/invoices';
 export type {
   InvoiceListQuery,
@@ -118,7 +123,50 @@ export type {
   InvoiceSummaryDto,
   InvoiceLineItemInput,
   InvoiceLineItemDto,
+  InvoicePaymentDto,
+  PublicInvoiceDto,
+  SendInvoiceSmsRequest,
+  SendInvoiceReceiptRequest,
+  MarkInvoicePaidRequest,
 } from './schemas/invoices';
+export {
+  organizationProfileDtoSchema,
+  updateOrganizationProfileRequestSchema,
+  paymentMethodDtoSchema,
+  createPaymentMethodRequestSchema,
+  updatePaymentMethodRequestSchema,
+  orgIntegrationDtoSchema,
+  updateOrgIntegrationRequestSchema,
+  stripeIntegrationConfigSchema,
+  ringcentralIntegrationConfigSchema,
+  PAYMENT_SOURCES,
+  INTEGRATION_KINDS,
+} from './schemas/settings';
+export type {
+  OrganizationProfileDto,
+  UpdateOrganizationProfileRequest,
+  PaymentMethodDto,
+  CreatePaymentMethodRequest,
+  UpdatePaymentMethodRequest,
+  OrgIntegrationDto,
+  UpdateOrgIntegrationRequest,
+  StripeIntegrationConfig,
+  RingCentralIntegrationConfig,
+  PaymentSource,
+  IntegrationKind,
+} from './schemas/settings';
+export {
+  customerStatementQuerySchema,
+  customerStatementDtoSchema,
+  statementJobRowSchema,
+  statementPaymentRowSchema,
+} from './schemas/statement';
+export type {
+  CustomerStatementQuery,
+  CustomerStatementDto,
+  StatementJobRow,
+  StatementPaymentRow,
+} from './schemas/statement';
 export {
   recurrenceRuleInputSchema,
   attachRecurrenceRequestSchema,
@@ -134,6 +182,24 @@ export type {
   OccurrenceDeleteRequest,
 } from './schemas/recurring';
 export {
+  customerPaymentMethodDtoSchema,
+  createSetupIntentResponseSchema,
+  customerCardRequestDtoSchema,
+  publicCardRequestDtoSchema,
+  publicCardSetupIntentResponseSchema,
+  chargeSavedCardRequestSchema,
+  CARD_REQUEST_STATUSES,
+} from './schemas/cards';
+export type {
+  CustomerPaymentMethodDto,
+  CreateSetupIntentResponse,
+  CustomerCardRequestDto,
+  PublicCardRequestDto,
+  PublicCardSetupIntentResponse,
+  ChargeSavedCardRequest,
+  CardRequestStatus,
+} from './schemas/cards';
+export {
   customerNoteDtoSchema,
   createNoteOpSchema,
   updateNoteOpSchema,
@@ -141,6 +207,10 @@ export {
   noteOpSchema,
   noteOpsSchema,
   jobNotesResponseSchema,
+  customerNotesResponseSchema,
+  saveCustomerNotesRequestSchema,
+  saveCustomerNotesResponseSchema,
+  noteMappingSchema,
 } from './schemas/notes';
 export type {
   CustomerNoteDto,
@@ -149,4 +219,7 @@ export type {
   DeleteNoteOp,
   NoteOp,
   JobNotesResponse,
+  CustomerNotesResponse,
+  SaveCustomerNotesRequest,
+  SaveCustomerNotesResponse,
 } from './schemas/notes';

@@ -14,7 +14,7 @@ import { apiFetch, apiItem, apiItems } from './api-client';
 export interface NoteMapping {
   tempId: string;
   noteId: string;
-  noteGroupId: string;
+  noteGroupId: string | null;
 }
 
 export interface JobsWindowResponse {

@@ -227,12 +227,12 @@ describe('Phase 4 customers API', () => {
       method: 'PATCH',
       url: `/api/customers/${id}`,
       cookies: { oc_access: access },
-      payload: { customerNotes: 'Just a note' },
+      payload: { referredBy: 'A friend' },
     });
     expect(patched.statusCode).toBe(200);
     expect(patched.json().item.phones).toHaveLength(1);
     expect(patched.json().item.addresses[0].street).toBe('1 Untouched Ave');
-    expect(patched.json().item.customerNotes).toBe('Just a note');
+    expect(patched.json().item.referredBy).toBe('A friend');
   });
 
   it('do_not_service forces sendNotifications false', async () => {

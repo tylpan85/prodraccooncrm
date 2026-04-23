@@ -9,7 +9,7 @@ export async function auditLog(
   tx: Tx,
   opts: {
     organizationId: string;
-    actorUserId: string;
+    actorUserId: string | null;
     entityType: string;
     entityId: string;
     action: string;

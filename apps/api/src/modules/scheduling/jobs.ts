@@ -13,7 +13,9 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { auditLog } from '../../lib/audit.js';
 import { ApiError } from '../../lib/error-envelope.js';
+import { newInvoicePublicToken } from '../../lib/invoice-token.js';
 import { requireAuth } from '../auth/guard.js';
+import { buildCompanySnapshot } from '../billing/invoices.js';
 import { processNoteOps } from './notes.js';
 import { ensureMaterializedUntil } from './recurring.js';
 
@@ -251,21 +253,50 @@ export function deriveJobTotals(items: JobServiceItemInput[]): {
   };
 }
 
-function buildLineItemsFromJob(job: JobRecord) {
+export type InvoiceSourceJob = {
+  titleOrSummary: string | null;
+  priceCents: number;
+  scheduledStartAt: Date;
+  serviceItems: Array<{
+    priceCents: number;
+    orderIndex: number;
+    nameSnapshot: string | null;
+    service: { name: string } | null;
+  }>;
+};
+
+export function buildInvoiceDataFromJob(job: InvoiceSourceJob): {
+  lineItems: Array<{ description: string; priceCents: number; orderIndex: number }>;
+  serviceNameSnapshot: string | null;
+  servicePriceCentsSnapshot: number;
+  serviceDateSnapshot: Date;
+} {
   if (job.serviceItems.length > 0) {
-    return job.serviceItems.map((item) => ({
-      description: item.service?.name ?? item.nameSnapshot ?? 'Service',
-      priceCents: item.priceCents,
-      orderIndex: item.orderIndex,
-    }));
+    const first = job.serviceItems[0]!;
+    const firstName = first.service?.name ?? first.nameSnapshot;
+    return {
+      lineItems: job.serviceItems.map((item) => ({
+        description: item.service?.name ?? item.nameSnapshot ?? 'Service',
+        priceCents: item.priceCents,
+        orderIndex: item.orderIndex,
+      })),
+      serviceNameSnapshot: firstName ?? job.titleOrSummary,
+      servicePriceCentsSnapshot: first.priceCents,
+      serviceDateSnapshot: job.scheduledStartAt,
+    };
   }
-  return [
-    {
-      description: job.titleOrSummary ?? 'Service',
-      priceCents: job.priceCents,
-      orderIndex: 0,
-    },
-  ];
+  return {
+    lineItems: [
+      {
+        description: job.titleOrSummary ?? 'Service',
+        priceCents: job.priceCents,
+        orderIndex: 0,
+      },
+    ],
+    serviceNameSnapshot: job.titleOrSummary,
+    servicePriceCentsSnapshot: job.priceCents,
+    serviceDateSnapshot: job.scheduledStartAt,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -574,12 +605,18 @@ export async function jobsRoutes(fastify: FastifyInstance) {
     const { id } = idParam.parse(req.params);
     const job = await prisma.job.findFirst({
       where: { id, organizationId: req.auth.orgId },
-      select: { id: true },
+      select: { id: true, customerId: true },
     });
     if (!job) throw new ApiError(ERROR_CODES.JOB_NOT_FOUND, 404, 'Job not found');
 
+    // Return both notes scoped to this job AND customer-level notes
+    // (jobId=null) so the centralized notes panel shows everything.
     const notes = await prisma.customerNote.findMany({
-      where: { jobId: id, organizationId: req.auth.orgId },
+      where: {
+        organizationId: req.auth.orgId,
+        customerId: job.customerId,
+        OR: [{ jobId: id }, { jobId: null }],
+      },
       orderBy: { createdAt: 'asc' },
       include: { author: { select: { email: true } } },
     });
@@ -830,7 +867,8 @@ export async function jobsRoutes(fastify: FastifyInstance) {
 
       const invoiceNumber = await nextInvoiceNumber(orgId, tx);
       const priceCents = job.priceCents;
-      const lines = buildLineItemsFromJob(job);
+      const snap = buildInvoiceDataFromJob(job);
+      const companySnap = await buildCompanySnapshot(tx, orgId);
 
       const invoice = await tx.invoice.create({
         data: {
@@ -843,10 +881,13 @@ export async function jobsRoutes(fastify: FastifyInstance) {
           totalCents: priceCents,
           amountDueCents: priceCents,
           paidCents: 0,
-          serviceNameSnapshot: job.titleOrSummary,
-          servicePriceCentsSnapshot: priceCents,
+          serviceNameSnapshot: snap.serviceNameSnapshot,
+          servicePriceCentsSnapshot: snap.servicePriceCentsSnapshot,
+          serviceDateSnapshot: snap.serviceDateSnapshot,
+          ...companySnap,
           dueDate: null,
-          lineItems: { create: lines },
+          publicToken: newInvoicePublicToken(),
+          lineItems: { create: snap.lineItems },
         },
       });
 
@@ -1012,7 +1053,8 @@ export async function jobsRoutes(fastify: FastifyInstance) {
         let invoice = job.invoice;
         if (!invoice) {
           const invoiceNumber = await nextInvoiceNumber(orgId, tx);
-          const lines = buildLineItemsFromJob(job);
+          const snap = buildInvoiceDataFromJob(job);
+          const companySnap = await buildCompanySnapshot(tx, orgId);
           invoice = await tx.invoice.create({
             data: {
               organizationId: orgId,
@@ -1024,10 +1066,13 @@ export async function jobsRoutes(fastify: FastifyInstance) {
               totalCents: job.priceCents,
               amountDueCents: job.priceCents,
               paidCents: 0,
-              serviceNameSnapshot: job.titleOrSummary,
-              servicePriceCentsSnapshot: job.priceCents,
+              serviceNameSnapshot: snap.serviceNameSnapshot,
+              servicePriceCentsSnapshot: snap.servicePriceCentsSnapshot,
+              serviceDateSnapshot: snap.serviceDateSnapshot,
+              ...companySnap,
               dueDate: null,
-              lineItems: { create: lines },
+              publicToken: newInvoicePublicToken(),
+              lineItems: { create: snap.lineItems },
             },
           });
         }

@@ -1,15 +1,21 @@
 import type {
   CreateLeadSourceRequest,
+  CreatePaymentMethodRequest,
   CreateServiceRequest,
   CreateTeamMemberRequest,
   CreateUserRequest,
+  IntegrationKind,
   LeadSourceDto,
-  OrganizationDto,
+  OrgIntegrationDto,
+  OrganizationProfileDto,
+  PaymentMethodDto,
   ServiceDto,
   SettingsUserDto,
   TeamMemberDto,
   UpdateLeadSourceRequest,
-  UpdateOrganizationRequest,
+  UpdateOrgIntegrationRequest,
+  UpdateOrganizationProfileRequest,
+  UpdatePaymentMethodRequest,
   UpdateServiceRequest,
   UpdateTeamMemberRequest,
   UpdateUserRequest,
@@ -54,7 +60,24 @@ export const settingsApi = {
   unarchiveUser: (id: string) =>
     apiItem<SettingsUserDto>(`/api/users/${id}/unarchive`, { method: 'PATCH', body: {} }),
 
-  getCurrentOrganization: () => apiItem<OrganizationDto>('/api/organizations/current'),
-  updateCurrentOrganization: (body: UpdateOrganizationRequest) =>
-    apiItem<OrganizationDto>('/api/organizations/current', { method: 'PATCH', body }),
+  getCurrentOrganization: () => apiItem<OrganizationProfileDto>('/api/organizations/current'),
+  updateCurrentOrganization: (body: UpdateOrganizationProfileRequest) =>
+    apiItem<OrganizationProfileDto>('/api/organizations/current', { method: 'PATCH', body }),
+
+  listPaymentMethods: (includeInactive = false) =>
+    apiItems<PaymentMethodDto>(
+      `/api/payment-methods${includeInactive ? '?includeInactive=true' : ''}`,
+    ),
+  createPaymentMethod: (body: CreatePaymentMethodRequest) =>
+    apiItem<PaymentMethodDto>('/api/payment-methods', { method: 'POST', body }),
+  updatePaymentMethod: (id: string, body: UpdatePaymentMethodRequest) =>
+    apiItem<PaymentMethodDto>(`/api/payment-methods/${id}`, { method: 'PATCH', body }),
+  deletePaymentMethod: (id: string) =>
+    apiFetch<{ item: { id: string } }>(`/api/payment-methods/${id}`, { method: 'DELETE' }),
+
+  listIntegrations: () => apiItems<OrgIntegrationDto>('/api/integrations'),
+  getIntegration: (kind: IntegrationKind) =>
+    apiItem<OrgIntegrationDto>(`/api/integrations/${kind}`),
+  updateIntegration: (kind: IntegrationKind, body: UpdateOrgIntegrationRequest) =>
+    apiItem<OrgIntegrationDto>(`/api/integrations/${kind}`, { method: 'PUT', body }),
 };

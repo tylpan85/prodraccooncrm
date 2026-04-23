@@ -1,16 +1,25 @@
 'use client';
 
-import type { CustomerDto } from '@openclaw/shared';
+import type {
+  CustomerCardRequestDto,
+  CustomerDto,
+  CustomerPaymentMethodDto,
+  NoteOp,
+} from '@openclaw/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Route } from 'next';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { AddCardDialog, RequestCardDialog } from '../../../../components/card-dialogs';
+import { ConfirmDialog } from '../../../../components/invoice-action-dialogs';
 import { InvoicesList } from '../../../../components/invoices-list';
 import { JobsList } from '../../../../components/jobs-list';
+import { NotesPanel, dedupeByNoteGroup } from '../../../../components/notes/notes-panel';
 import { Button } from '../../../../components/ui/button';
 import { DetailSkeleton } from '../../../../components/ui/skeleton';
 import { ApiClientError } from '../../../../lib/api-client';
+import { cardsApi } from '../../../../lib/cards-api';
 import { customersApi } from '../../../../lib/customers-api';
 
 type Tab = 'overview' | 'jobs' | 'invoices';
@@ -27,6 +36,26 @@ export default function CustomerDetailPage() {
     retry: false,
   });
 
+  const notesQuery = useQuery({
+    queryKey: ['customer-notes', id],
+    queryFn: () => customersApi.getNotes(id),
+  });
+
+  const [noteOps, setNoteOps] = useState<NoteOp[]>([]);
+
+  const saveNotesMutation = useMutation({
+    mutationFn: () => customersApi.saveNotes(id, { noteOps }),
+    onSuccess: () => {
+      setNoteOps([]);
+      queryClient.invalidateQueries({ queryKey: ['customer-notes', id] });
+    },
+  });
+
+  const dedupedNotes = useMemo(
+    () => (notesQuery.data ? dedupeByNoteGroup(notesQuery.data.notes) : []),
+    [notesQuery.data],
+  );
+
   const archiveMutation = useMutation({
     mutationFn: () => customersApi.archiveCustomer(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['customer', id] }),
@@ -36,6 +65,31 @@ export default function CustomerDetailPage() {
     mutationFn: () => customersApi.unarchiveCustomer(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['customer', id] }),
   });
+
+  const [openCardDialog, setOpenCardDialog] = useState<'add' | 'request' | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<CustomerPaymentMethodDto | null>(null);
+  const [cardActionError, setCardActionError] = useState<string | null>(null);
+
+  const cardsQuery = useQuery({
+    queryKey: ['customer-cards', id],
+    queryFn: () => cardsApi.listPaymentMethods(id),
+  });
+  const requestsQuery = useQuery({
+    queryKey: ['customer-card-requests', id],
+    queryFn: () => cardsApi.listCardRequests(id),
+  });
+
+  const setDefaultMutation = useMutation({
+    mutationFn: (pmId: string) => cardsApi.setDefault(id, pmId),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['customer-cards', id] }),
+    onError: (err) =>
+      setCardActionError(err instanceof Error ? err.message : 'Could not set default card.'),
+  });
+
+  const paymentMethods = cardsQuery.data?.items ?? [];
+  const pendingCardRequests = (requestsQuery.data?.items ?? []).filter(
+    (r) => r.status === 'pending' && new Date(r.expiresAt).getTime() > Date.now(),
+  );
 
   if (customerQuery.isLoading) {
     return (
@@ -211,10 +265,31 @@ export default function CustomerDetailPage() {
           </Card>
 
           <Card title="Notes">
-            {c.customerNotes ? (
-              <p className="whitespace-pre-wrap text-sm text-slate-700">{c.customerNotes}</p>
-            ) : (
-              <p className="text-sm text-slate-500">No notes.</p>
+            <NotesPanel
+              notes={dedupedNotes}
+              noteOps={noteOps}
+              setNoteOps={setNoteOps}
+              saving={saveNotesMutation.isPending}
+              loading={notesQuery.isLoading}
+              title=""
+              emptyMessage="No notes."
+            />
+            {noteOps.length > 0 && (
+              <div className="mt-3 flex justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  onClick={() => setNoteOps([])}
+                  disabled={saveNotesMutation.isPending}
+                >
+                  Discard
+                </Button>
+                <Button
+                  onClick={() => saveNotesMutation.mutate()}
+                  disabled={saveNotesMutation.isPending}
+                >
+                  {saveNotesMutation.isPending ? 'Saving…' : 'Save notes'}
+                </Button>
+              </div>
             )}
           </Card>
 
@@ -232,7 +307,141 @@ export default function CustomerDetailPage() {
               <Field label="Send notifications" value={c.sendNotifications ? 'Yes' : 'No'} />
             </Stack>
           </Card>
+
+          <Card
+            title="Payment methods"
+            className="lg:col-span-2"
+            actions={
+              <div className="flex gap-2">
+                <Button size="sm" variant="secondary" onClick={() => setOpenCardDialog('request')}>
+                  Request card
+                </Button>
+                <Button size="sm" onClick={() => setOpenCardDialog('add')}>
+                  Add card
+                </Button>
+              </div>
+            }
+          >
+            {cardActionError && (
+              <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {cardActionError}
+              </div>
+            )}
+
+            {cardsQuery.isLoading ? (
+              <p className="text-sm text-slate-500">Loading cards…</p>
+            ) : cardsQuery.error ? (
+              <p className="text-sm text-red-700">
+                {cardsQuery.error instanceof ApiClientError &&
+                cardsQuery.error.code === 'INTEGRATION_DISABLED'
+                  ? 'Stripe integration is disabled. Enable it in Settings → Integrations.'
+                  : 'Could not load saved cards.'}
+              </p>
+            ) : paymentMethods.length === 0 ? (
+              <p className="text-sm text-slate-500">No saved cards.</p>
+            ) : (
+              <ul className="divide-y divide-slate-100">
+                {paymentMethods.map((pm) => (
+                  <li key={pm.id} className="flex flex-wrap items-center gap-3 py-2">
+                    <div className="text-sm text-slate-700">
+                      <span className="font-medium capitalize">{pm.brand ?? 'Card'}</span>
+                      <span className="ml-1">•••• {pm.last4 ?? '----'}</span>
+                      {pm.expMonth && pm.expYear && (
+                        <span className="ml-2 text-xs text-slate-500">
+                          exp {String(pm.expMonth).padStart(2, '0')}/
+                          {String(pm.expYear).slice(-2)}
+                        </span>
+                      )}
+                    </div>
+                    {pm.isDefault && (
+                      <span className="inline-flex items-center rounded bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-800">
+                        Default
+                      </span>
+                    )}
+                    <div className="ml-auto flex gap-2">
+                      {!pm.isDefault && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={setDefaultMutation.isPending}
+                          onClick={() => {
+                            setCardActionError(null);
+                            setDefaultMutation.mutate(pm.id);
+                          }}
+                        >
+                          Set default
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        onClick={() => {
+                          setCardActionError(null);
+                          setPendingDelete(pm);
+                        }}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {pendingCardRequests.length > 0 && (
+              <div className="mt-4 border-t border-slate-200 pt-3">
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Pending requests
+                </h3>
+                <ul className="space-y-2">
+                  {pendingCardRequests.map((r) => (
+                    <PendingRequestRow key={r.id} req={r} />
+                  ))}
+                </ul>
+              </div>
+            )}
+          </Card>
         </div>
+      )}
+
+      {openCardDialog === 'add' && (
+        <AddCardDialog
+          customerId={id}
+          onClose={() => setOpenCardDialog(null)}
+          onDone={() => {
+            setOpenCardDialog(null);
+            queryClient.invalidateQueries({ queryKey: ['customer-cards', id] });
+          }}
+        />
+      )}
+
+      {openCardDialog === 'request' && (
+        <RequestCardDialog
+          customerId={id}
+          onClose={() => setOpenCardDialog(null)}
+          onDone={() =>
+            queryClient.invalidateQueries({ queryKey: ['customer-card-requests', id] })
+          }
+        />
+      )}
+
+      {pendingDelete && (
+        <ConfirmDialog
+          title="Remove card?"
+          message={`Remove the card ending in ${pendingDelete.last4 ?? '----'}? It will no longer be available for charges.`}
+          confirmLabel="Remove"
+          danger
+          mutationFn={() => cardsApi.deletePaymentMethod(id, pendingDelete.id)}
+          onClose={() => setPendingDelete(null)}
+          onDone={() => {
+            setPendingDelete(null);
+            queryClient.invalidateQueries({ queryKey: ['customer-cards', id] });
+          }}
+          onError={(msg) => {
+            setPendingDelete(null);
+            setCardActionError(msg);
+          }}
+        />
       )}
 
       {tab === 'jobs' && (
@@ -254,10 +463,23 @@ export default function CustomerDetailPage() {
   );
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({
+  title,
+  children,
+  actions,
+  className,
+}: {
+  title: string;
+  children: React.ReactNode;
+  actions?: React.ReactNode;
+  className?: string;
+}) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4">
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</h2>
+    <div className={`rounded-lg border border-slate-200 bg-white p-4 ${className ?? ''}`}>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{title}</h2>
+        {actions}
+      </div>
       {children}
     </div>
   );
@@ -272,6 +494,35 @@ function Field({ label, value }: { label: string; value: string }) {
     <p className="text-sm text-slate-700">
       <span className="text-slate-500">{label}:</span> {value}
     </p>
+  );
+}
+
+function PendingRequestRow({ req }: { req: CustomerCardRequestDto }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(req.publicUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  }
+  return (
+    <li className="flex flex-wrap items-center gap-2">
+      <input
+        readOnly
+        value={req.publicUrl}
+        onFocus={(e) => e.currentTarget.select()}
+        className="min-w-0 flex-1 rounded-md border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs text-slate-800"
+      />
+      <Button size="sm" variant="secondary" onClick={copy}>
+        {copied ? 'Copied' : 'Copy'}
+      </Button>
+      <span className="text-xs text-slate-500">
+        expires {new Date(req.expiresAt).toLocaleDateString()}
+      </span>
+    </li>
   );
 }
 

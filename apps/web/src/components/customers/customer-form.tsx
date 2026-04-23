@@ -41,7 +41,6 @@ export interface CustomerFormState {
   subcontractor: boolean;
   doNotService: boolean;
   sendNotifications: boolean;
-  customerNotes: string;
   leadSource: string;
   referredBy: string;
   billingAddress: string;
@@ -79,7 +78,6 @@ export const emptyCustomerForm: CustomerFormState = {
   subcontractor: false,
   doNotService: false,
   sendNotifications: true,
-  customerNotes: '',
   leadSource: '',
   referredBy: '',
   billingAddress: '',
@@ -101,7 +99,6 @@ export function customerToFormState(c: CustomerDto): CustomerFormState {
     subcontractor: c.subcontractor,
     doNotService: c.doNotService,
     sendNotifications: c.sendNotifications,
-    customerNotes: c.customerNotes ?? '',
     leadSource: c.leadSource ?? '',
     referredBy: c.referredBy ?? '',
     billingAddress: c.billingAddress ?? '',
@@ -196,7 +193,6 @@ export function formStateToRequest(form: CustomerFormState): CreateCustomerReque
     subcontractor: isBusiness ? form.subcontractor : false,
     doNotService: form.doNotService,
     sendNotifications: form.doNotService ? false : form.sendNotifications,
-    customerNotes: trimToNull(form.customerNotes),
     leadSource: trimToNull(form.leadSource),
     referredBy: trimToNull(form.referredBy),
     billingAddress: trimToNull(form.billingAddress),
@@ -540,15 +536,6 @@ export function CustomerForm({
             </div>
           </Section>
 
-          <Section title="Notes">
-            <textarea
-              className="min-h-24 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-100"
-              value={form.customerNotes}
-              maxLength={4000}
-              onChange={(e) => update((c) => ({ ...c, customerNotes: e.target.value }))}
-              disabled={saving}
-            />
-          </Section>
         </div>
 
         <div className="space-y-6">

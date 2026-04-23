@@ -1,8 +1,11 @@
 import type {
   CreateCustomerRequest,
   CustomerDto,
+  CustomerNotesResponse,
   CustomerSummaryDto,
   DuplicateMatchDto,
+  SaveCustomerNotesRequest,
+  SaveCustomerNotesResponse,
   UpdateCustomerRequest,
 } from '@openclaw/shared';
 import { apiFetch, apiItem, apiItems } from './api-client';
@@ -77,4 +80,10 @@ export const customersApi = {
     apiFetch<{ items: unknown[]; nextCursor: string | null }>(`/api/customers/${id}/jobs`),
   listInvoices: (id: string) =>
     apiFetch<{ items: unknown[]; nextCursor: string | null }>(`/api/customers/${id}/invoices`),
+  getNotes: (id: string) => apiFetch<CustomerNotesResponse>(`/api/customers/${id}/notes`),
+  saveNotes: (id: string, body: SaveCustomerNotesRequest) =>
+    apiFetch<SaveCustomerNotesResponse>(`/api/customers/${id}/notes/save`, {
+      method: 'POST',
+      body,
+    }),
 };

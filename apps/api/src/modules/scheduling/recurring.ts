@@ -213,6 +213,7 @@ async function materializeTail(
       { content: string; authorUserId: string | null; customerId: string }
     >();
     for (const n of sourceNotes) {
+      if (n.noteGroupId === null) continue;
       if (!templates.has(n.noteGroupId)) {
         templates.set(n.noteGroupId, {
           content: n.content,

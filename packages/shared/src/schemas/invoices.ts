@@ -60,6 +60,36 @@ export const editInvoiceRequestSchema = z.object({
 export type EditInvoiceRequest = z.infer<typeof editInvoiceRequestSchema>;
 
 // ---------------------------------------------------------------------------
+// Send / mark-paid actions
+// ---------------------------------------------------------------------------
+
+const isoDateTimeOptional = z
+  .string()
+  .datetime({ offset: true })
+  .optional();
+
+export const sendInvoiceSmsRequestSchema = z.object({
+  toPhone: z
+    .string()
+    .trim()
+    .min(7, 'Phone is required')
+    .max(20),
+});
+export type SendInvoiceSmsRequest = z.infer<typeof sendInvoiceSmsRequestSchema>;
+
+export const markInvoicePaidRequestSchema = z.object({
+  paymentMethodId: z.string().uuid(),
+  reference: z.string().trim().max(120).optional(),
+  paidAt: isoDateTimeOptional,
+});
+export type MarkInvoicePaidRequest = z.infer<typeof markInvoicePaidRequestSchema>;
+
+export const sendInvoiceReceiptRequestSchema = z.object({
+  toEmail: z.string().email(),
+});
+export type SendInvoiceReceiptRequest = z.infer<typeof sendInvoiceReceiptRequestSchema>;
+
+// ---------------------------------------------------------------------------
 // DTOs
 // ---------------------------------------------------------------------------
 
@@ -71,6 +101,21 @@ export const invoiceLineItemDtoSchema = z.object({
 });
 
 export type InvoiceLineItemDto = z.infer<typeof invoiceLineItemDtoSchema>;
+
+export const invoicePaymentDtoSchema = z.object({
+  id: z.string().uuid(),
+  paymentMethodId: z.string().uuid().nullable(),
+  paymentMethodName: z.string(),
+  source: z.enum(['manual', 'stripe']),
+  amountCents: z.number().int(),
+  reference: z.string().nullable(),
+  paidAt: z.string(),
+  recordedByUserId: z.string().uuid().nullable(),
+  stripeChargeId: z.string().nullable(),
+  stripePaymentIntentId: z.string().nullable(),
+  createdAt: z.string(),
+});
+export type InvoicePaymentDto = z.infer<typeof invoicePaymentDtoSchema>;
 
 export const invoiceDtoSchema = z.object({
   id: z.string().uuid(),
@@ -88,12 +133,21 @@ export const invoiceDtoSchema = z.object({
   serviceNameSnapshot: z.string().nullable(),
   servicePriceCentsSnapshot: z.number().nullable(),
   lineItems: z.array(invoiceLineItemDtoSchema),
+  payments: z.array(invoicePaymentDtoSchema),
   dueDate: z.string().nullable(),
   createdAt: z.string(),
   sentAt: z.string().nullable(),
   paidAt: z.string().nullable(),
   voidedAt: z.string().nullable(),
   updatedAt: z.string(),
+  publicToken: z.string(),
+  lastSentVia: z.string().nullable(),
+  lastSentAt: z.string().nullable(),
+  lockedAt: z.string().nullable(),
+  companyNameSnapshot: z.string().nullable(),
+  companyAddressSnapshot: z.string().nullable(),
+  companyPhoneSnapshot: z.string().nullable(),
+  companyWebsiteSnapshot: z.string().nullable(),
 });
 
 export type InvoiceDto = z.infer<typeof invoiceDtoSchema>;
@@ -112,3 +166,27 @@ export const invoiceSummaryDtoSchema = z.object({
 });
 
 export type InvoiceSummaryDto = z.infer<typeof invoiceSummaryDtoSchema>;
+
+// ---------------------------------------------------------------------------
+// Public pay page (anonymous)
+// ---------------------------------------------------------------------------
+
+export const publicInvoiceDtoSchema = z.object({
+  invoiceNumber: z.string(),
+  status: z.string(),
+  totalCents: z.number(),
+  amountDueCents: z.number(),
+  paidCents: z.number(),
+  paidAt: z.string().nullable(),
+  dueDate: z.string().nullable(),
+  createdAt: z.string(),
+  serviceNameSnapshot: z.string().nullable(),
+  lineItems: z.array(invoiceLineItemDtoSchema),
+  customerDisplayName: z.string().nullable(),
+  companyName: z.string(),
+  companyAddress: z.string().nullable(),
+  companyPhone: z.string().nullable(),
+  companyWebsite: z.string().nullable(),
+  stripeEnabled: z.boolean(),
+});
+export type PublicInvoiceDto = z.infer<typeof publicInvoiceDtoSchema>;

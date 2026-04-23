@@ -7,13 +7,17 @@ import { loadEnv } from './lib/env.js';
 import { errorHandler } from './lib/error-envelope.js';
 import { createLogger } from './lib/logger.js';
 import { authRoutes } from './modules/auth/routes.js';
+import { cardsRoutes } from './modules/billing/cards.js';
 import { invoicesRoutes } from './modules/billing/invoices.js';
+import { publicRoutes } from './modules/billing/public.js';
+import { webhooksRoutes } from './modules/billing/webhooks.js';
 import { customersRoutes } from './modules/customers/routes.js';
 import { identityRoutes } from './modules/identity/routes.js';
 import { eventsRoutes } from './modules/scheduling/events.js';
 import { jobsRoutes } from './modules/scheduling/jobs.js';
 import { recurringRoutes } from './modules/scheduling/recurring.js';
 import { scheduleRoutes } from './modules/scheduling/schedule.js';
+import { settingsRoutes } from './modules/settings/routes.js';
 import { healthRoutes } from './routes/health.js';
 
 async function main() {
@@ -48,12 +52,16 @@ async function main() {
   await fastify.register(healthRoutes);
   await fastify.register(authRoutes);
   await fastify.register(identityRoutes);
+  await fastify.register(settingsRoutes);
   await fastify.register(customersRoutes);
   await fastify.register(jobsRoutes);
   await fastify.register(eventsRoutes);
   await fastify.register(recurringRoutes);
   await fastify.register(scheduleRoutes);
   await fastify.register(invoicesRoutes);
+  await fastify.register(cardsRoutes);
+  await fastify.register(publicRoutes);
+  await fastify.register(webhooksRoutes);
 
   fastify.addHook('onClose', async () => {
     await prisma.$disconnect();

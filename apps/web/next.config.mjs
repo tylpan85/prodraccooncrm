@@ -11,7 +11,12 @@ const nextConfig = {
   turbopack: {
     root: path.resolve(__dirname, '../..'),
   },
-  allowedDevOrigins: ['192.168.1.215'],
+  allowedDevOrigins: ['192.168.1.215', '73.111.4.104'],
+  async rewrites() {
+    return [
+      { source: '/api/:path*', destination: 'http://127.0.0.1:4000/api/:path*' },
+    ];
+  },
 };
 
 export default nextConfig;

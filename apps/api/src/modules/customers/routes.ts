@@ -7,8 +7,10 @@ import {
   type PhoneInput,
   createCustomerRequestSchema,
   customerListQuerySchema,
+  customerStatementQuerySchema,
   deriveDisplayName,
   digitsOnly,
+  saveCustomerNotesRequestSchema,
   searchDuplicatesQuerySchema,
   updateCustomerRequestSchema,
 } from '@openclaw/shared';
@@ -16,7 +18,9 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { auditLog } from '../../lib/audit.js';
 import { ApiError } from '../../lib/error-envelope.js';
+import { buildCustomerStatementPdf } from '../../lib/statement-pdf.js';
 import { requireAuth } from '../auth/guard.js';
+import { processCustomerNoteOps } from '../scheduling/notes.js';
 
 type CustomerRecord = Prisma.CustomerGetPayload<{
   include: {
@@ -48,7 +52,6 @@ function customerDto(c: CustomerRecord) {
     doNotService: c.doNotService,
     archived: c.archived,
     sendNotifications: c.sendNotifications,
-    customerNotes: c.customerNotes,
     leadSource: c.leadSource,
     referredBy: c.referredBy,
     billingAddress: c.billingAddress,
@@ -376,7 +379,6 @@ export async function customersRoutes(fastify: FastifyInstance) {
           subcontractor: body.subcontractor ?? false,
           doNotService: body.doNotService ?? false,
           sendNotifications,
-          customerNotes: body.customerNotes ?? null,
           leadSource: body.leadSource ?? null,
           referredBy: body.referredBy ?? null,
           billingAddress: body.billingAddress ?? null,
@@ -504,7 +506,6 @@ export async function customersRoutes(fastify: FastifyInstance) {
         subcontractor: body.subcontractor ?? undefined,
         doNotService: body.doNotService ?? undefined,
         sendNotifications,
-        customerNotes: body.customerNotes !== undefined ? body.customerNotes : undefined,
         leadSource: body.leadSource !== undefined ? body.leadSource : undefined,
         referredBy: body.referredBy !== undefined ? body.referredBy : undefined,
         billingAddress: body.billingAddress !== undefined ? body.billingAddress : undefined,
@@ -643,6 +644,266 @@ export async function customersRoutes(fastify: FastifyInstance) {
         createdAt: inv.createdAt.toISOString(),
       })),
       nextCursor: null,
+    });
+  });
+
+  // ── Customer statement (completed jobs + payments in date range) ─────
+  async function buildStatementData(
+    orgId: string,
+    customerId: string,
+    dateFrom: string | undefined,
+    dateTo: string | undefined,
+  ) {
+    const customer = await prisma.customer.findFirst({
+      where: { id: customerId, organizationId: orgId },
+      select: { id: true, displayName: true },
+    });
+    if (!customer) throw new ApiError(ERROR_CODES.CUSTOMER_NOT_FOUND, 404, 'Customer not found');
+
+    const dateFromDt = dateFrom ? new Date(`${dateFrom}T00:00:00.000Z`) : undefined;
+    const dateToDt = dateTo ? new Date(`${dateTo}T23:59:59.999Z`) : undefined;
+    const dateFilter: Prisma.DateTimeFilter = {};
+    if (dateFromDt) dateFilter.gte = dateFromDt;
+    if (dateToDt) dateFilter.lte = dateToDt;
+    const hasDateFilter = dateFromDt !== undefined || dateToDt !== undefined;
+
+    const jobs = await prisma.job.findMany({
+      where: {
+        organizationId: orgId,
+        customerId,
+        jobStage: 'job_done',
+        ...(hasDateFilter ? { finishedAt: dateFilter } : {}),
+      },
+      include: {
+        invoice: true,
+        service: { select: { name: true } },
+      },
+      orderBy: { finishedAt: 'asc' },
+    });
+
+    const payments = await prisma.invoicePayment.findMany({
+      where: {
+        organizationId: orgId,
+        invoice: { customerId },
+        ...(hasDateFilter ? { paidAt: dateFilter } : {}),
+      },
+      include: {
+        invoice: { select: { id: true, invoiceNumber: true } },
+        paymentMethod: { select: { name: true } },
+      },
+      orderBy: { paidAt: 'asc' },
+    });
+
+    const billed = jobs.reduce((sum, j) => sum + (j.invoice?.totalCents ?? 0), 0);
+    const paid = payments.reduce((sum, p) => sum + p.amountCents, 0);
+    return {
+      customer,
+      jobs,
+      payments,
+      totalsCents: { billed, paid, outstanding: billed - paid },
+    };
+  }
+
+  fastify.get('/api/customers/:id/statement', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const q = customerStatementQuerySchema.parse({
+      customerId: id,
+      ...(req.query as Record<string, unknown>),
+    });
+
+    const { customer, jobs, payments, totalsCents } = await buildStatementData(
+      req.auth.orgId,
+      id,
+      q.dateFrom,
+      q.dateTo,
+    );
+
+    return reply.send({
+      item: {
+        customerId: customer.id,
+        customerDisplayName: customer.displayName,
+        dateFrom: q.dateFrom ?? null,
+        dateTo: q.dateTo ?? null,
+        jobs: jobs.map((j) => ({
+          jobId: j.id,
+          jobNumber: j.jobNumber,
+          doneAt: (j.finishedAt ?? j.updatedAt).toISOString(),
+          serviceName: j.service?.name ?? j.invoice?.serviceNameSnapshot ?? null,
+          invoiceId: j.invoice?.id ?? null,
+          invoiceNumber: j.invoice?.invoiceNumber ?? null,
+          invoiceStatus: j.invoice?.status ?? null,
+          totalCents: j.invoice?.totalCents ?? 0,
+          amountDueCents: j.invoice?.amountDueCents ?? 0,
+        })),
+        payments: payments.map((p) => ({
+          id: p.id,
+          paymentMethodId: p.paymentMethodId,
+          paymentMethodName: p.paymentMethod?.name ?? p.paymentMethodNameSnapshot,
+          source: p.source,
+          amountCents: p.amountCents,
+          reference: p.reference,
+          paidAt: p.paidAt.toISOString(),
+          recordedByUserId: p.recordedByUserId,
+          stripeChargeId: p.stripeChargeId,
+          stripePaymentIntentId: p.stripePaymentIntentId,
+          createdAt: p.createdAt.toISOString(),
+          invoiceId: p.invoice.id,
+          invoiceNumber: p.invoice.invoiceNumber,
+        })),
+        totalsCents,
+        generatedAt: new Date().toISOString(),
+      },
+    });
+  });
+
+  fastify.get('/api/customers/:id/statement/pdf', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const q = customerStatementQuerySchema.parse({
+      customerId: id,
+      ...(req.query as Record<string, unknown>),
+    });
+
+    const { customer, jobs, payments, totalsCents } = await buildStatementData(
+      req.auth.orgId,
+      id,
+      q.dateFrom,
+      q.dateTo,
+    );
+
+    const org = await prisma.organization.findUniqueOrThrow({
+      where: { id: req.auth.orgId },
+      select: { name: true, address: true, phone: true, website: true },
+    });
+
+    const buf = await buildCustomerStatementPdf({
+      customerDisplayName: customer.displayName,
+      dateFrom: q.dateFrom ?? null,
+      dateTo: q.dateTo ?? null,
+      generatedAt: new Date().toISOString(),
+      jobs: jobs.map((j) => ({
+        jobNumber: j.jobNumber,
+        doneAt: (j.finishedAt ?? j.updatedAt).toISOString(),
+        serviceName: j.service?.name ?? j.invoice?.serviceNameSnapshot ?? null,
+        invoiceNumber: j.invoice?.invoiceNumber ?? null,
+        invoiceStatus: j.invoice?.status ?? null,
+        totalCents: j.invoice?.totalCents ?? 0,
+        amountDueCents: j.invoice?.amountDueCents ?? 0,
+      })),
+      payments: payments.map((p) => ({
+        paidAt: p.paidAt.toISOString(),
+        invoiceNumber: p.invoice.invoiceNumber,
+        paymentMethodName: p.paymentMethod?.name ?? p.paymentMethodNameSnapshot,
+        reference: p.reference,
+        amountCents: p.amountCents,
+      })),
+      totalsCents,
+      companyName: org.name,
+      companyAddress: org.address,
+      companyPhone: org.phone,
+      companyWebsite: org.website,
+    });
+
+    const safeName = (customer.displayName ?? 'customer').replace(/[^a-zA-Z0-9-_]/g, '_');
+    const fileName = `statement-${safeName}-${q.dateFrom ?? 'all'}-${q.dateTo ?? 'now'}.pdf`;
+
+    return reply
+      .header('Content-Type', 'application/pdf')
+      .header('Content-Disposition', `inline; filename="${fileName}"`)
+      .send(buf);
+  });
+
+  // ── Customer-level notes (centralized: every note for the customer) ──
+  // The customer page shows ONE row per logical note. For series-replicated
+  // notes (noteGroupId set on multiple jobs) we collapse to a single
+  // representative row (lowest createdAt) so the user sees the note once.
+  fastify.get('/api/customers/:id/notes', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const exists = await prisma.customer.findFirst({
+      where: { id, organizationId: req.auth.orgId },
+      select: { id: true },
+    });
+    if (!exists) throw new ApiError(ERROR_CODES.CUSTOMER_NOT_FOUND, 404, 'Customer not found');
+
+    const rows = await prisma.customerNote.findMany({
+      where: { organizationId: req.auth.orgId, customerId: id },
+      orderBy: { createdAt: 'asc' },
+      include: { author: { select: { email: true } } },
+    });
+
+    const seenGroups = new Set<string>();
+    const deduped = rows.filter((n) => {
+      if (n.noteGroupId === null) return true;
+      if (seenGroups.has(n.noteGroupId)) return false;
+      seenGroups.add(n.noteGroupId);
+      return true;
+    });
+
+    return reply.send({
+      notes: deduped.map((n) => ({
+        id: n.id,
+        noteGroupId: n.noteGroupId,
+        jobId: n.jobId,
+        customerId: n.customerId,
+        content: n.content,
+        authorUserId: n.authorUserId,
+        authorEmail: n.author?.email ?? null,
+        createdAt: n.createdAt.toISOString(),
+        updatedAt: n.updatedAt.toISOString(),
+      })),
+    });
+  });
+
+  fastify.post('/api/customers/:id/notes/save', async (req, reply) => {
+    if (!req.auth) throw new ApiError(ERROR_CODES.UNAUTHENTICATED, 401, 'Not authenticated');
+    const { id } = idParam.parse(req.params);
+    const exists = await prisma.customer.findFirst({
+      where: { id, organizationId: req.auth.orgId },
+      select: { id: true },
+    });
+    if (!exists) throw new ApiError(ERROR_CODES.CUSTOMER_NOT_FOUND, 404, 'Customer not found');
+
+    const body = saveCustomerNotesRequestSchema.parse(req.body);
+
+    const noteMappings = await prisma.$transaction(async (tx) => {
+      return processCustomerNoteOps({
+        tx,
+        orgId: req.auth!.orgId,
+        customerId: id,
+        authorUserId: req.auth!.sub,
+        noteOps: body.noteOps,
+      });
+    });
+
+    const rows = await prisma.customerNote.findMany({
+      where: { organizationId: req.auth.orgId, customerId: id },
+      orderBy: { createdAt: 'asc' },
+      include: { author: { select: { email: true } } },
+    });
+
+    const seenGroups = new Set<string>();
+    const deduped = rows.filter((n) => {
+      if (n.noteGroupId === null) return true;
+      if (seenGroups.has(n.noteGroupId)) return false;
+      seenGroups.add(n.noteGroupId);
+      return true;
+    });
+
+    return reply.send({
+      notes: deduped.map((n) => ({
+        id: n.id,
+        noteGroupId: n.noteGroupId,
+        jobId: n.jobId,
+        customerId: n.customerId,
+        content: n.content,
+        authorUserId: n.authorUserId,
+        authorEmail: n.author?.email ?? null,
+        createdAt: n.createdAt.toISOString(),
+        updatedAt: n.updatedAt.toISOString(),
+      })),
+      noteMappings,
     });
   });
 }

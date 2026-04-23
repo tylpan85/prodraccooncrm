@@ -6,8 +6,8 @@ import { z } from 'zod';
 
 export const customerNoteDtoSchema = z.object({
   id: z.string().uuid(),
-  noteGroupId: z.string().uuid(),
-  jobId: z.string().uuid(),
+  noteGroupId: z.string().uuid().nullable(),
+  jobId: z.string().uuid().nullable(),
   customerId: z.string().uuid(),
   content: z.string(),
   authorUserId: z.string().uuid().nullable(),
@@ -66,3 +66,36 @@ export const jobNotesResponseSchema = z.object({
 });
 
 export type JobNotesResponse = z.infer<typeof jobNotesResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// GET /api/customers/:customerId/notes
+// ---------------------------------------------------------------------------
+
+export const customerNotesResponseSchema = z.object({
+  notes: z.array(customerNoteDtoSchema),
+});
+
+export type CustomerNotesResponse = z.infer<typeof customerNotesResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// POST /api/customers/:customerId/notes/save
+// ---------------------------------------------------------------------------
+
+export const saveCustomerNotesRequestSchema = z.object({
+  noteOps: noteOpsSchema,
+});
+
+export type SaveCustomerNotesRequest = z.infer<typeof saveCustomerNotesRequestSchema>;
+
+export const noteMappingSchema = z.object({
+  tempId: z.string(),
+  noteId: z.string().uuid(),
+  noteGroupId: z.string().uuid().nullable(),
+});
+
+export const saveCustomerNotesResponseSchema = z.object({
+  notes: z.array(customerNoteDtoSchema),
+  noteMappings: z.array(noteMappingSchema),
+});
+
+export type SaveCustomerNotesResponse = z.infer<typeof saveCustomerNotesResponseSchema>;

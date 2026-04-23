@@ -10,6 +10,8 @@ const items: { href: Route; label: string }[] = [
   { href: '/settings/lead-sources', label: 'Lead Sources' },
   { href: '/settings/team', label: 'Team' },
   { href: '/settings/users', label: 'Users' },
+  { href: '/settings/payment-methods', label: 'Payment Methods' },
+  { href: '/settings/integrations', label: 'Integrations' },
   { href: '/settings/organization', label: 'Organization' },
 ];
 
